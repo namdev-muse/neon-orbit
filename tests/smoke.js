@@ -6,6 +6,8 @@ import {
   levelHasMovingPlanets, levelBlackHoles, FEEDBACK, FEEDBACK_TIERS,
   NEAR_MISS_BAND, isNearMiss, COMET_RADIUS,
   defaultSave, serializeSave, parseSave, totalStars,
+  dateSeed, dateKey, seedFromString, parseSeedParam, dailyDifficulty,
+  endlessDifficulty, generateLevel, registerGeneratedLevel, solveShot, solveLevel,
 } from '../physics.js';
 
 let passed = 0, failed = 0;
@@ -91,7 +93,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.5.0', VERSION === '0.5.0');
+  check('physics version is 0.6.0', VERSION === '0.6.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -305,10 +307,92 @@ check('level not complete with targets left',
   }
 }
 
+// --- seeded levels: daily / seed links / endless (Block 6) ---
+{
+  // Seed helpers: the daily seed is the calendar date, so everyone gets
+  // the same level; word seeds hash stably; numeric seeds pass through.
+  const d1 = new Date(2026, 10, 20);
+  const d2 = new Date(2026, 10, 21);
+  check('daily seed is YYYYMMDD', dateSeed(d1) === 20261120);
+  check('daily seed changes with the date', dateSeed(d1) !== dateSeed(d2));
+  check('daily seed is the same for the same date', dateSeed(new Date(2026, 10, 20)) === 20261120);
+  check('date key formats YYYY-MM-DD', dateKey(d1) === '2026-11-20');
+  check('word seed hashes deterministically', seedFromString('orbit42') === seedFromString('orbit42'));
+  check('different word seeds hash differently', seedFromString('orbit42') !== seedFromString('orbit43'));
+  check('numeric seed param passes through', parseSeedParam('777') === 777);
+  check('word seed param hashes', parseSeedParam('orbit42') === seedFromString('orbit42'));
+  check('empty seed param is null', parseSeedParam('') === null && parseSeedParam(null) === null);
+  check('whitespace-only seed param is null', parseSeedParam('   ') === null);
+  check('daily difficulty rotates 2..4', [0, 1, 2, 3, 4, 5, 6].every((i) => {
+    const d = dailyDifficulty(new Date(2026, 0, 1 + i));
+    return d >= 2 && d <= 4;
+  }));
+  check('endless difficulty is the round number', endlessDifficulty(1) === 1 && endlessDifficulty(5) === 5);
+  check('endless difficulty never drops below 1', endlessDifficulty(0) === 1);
+
+  // The solver: the shared grid search the bot and the generator use.
+  const solved = solveShot(LEVELS[0], []);
+  check('solver finds a collecting shot on level 1', solved && solved.res.collected.length === 1);
+  const plan = solveLevel(LEVELS[5], shotBudget(LEVELS[5]));
+  check('solver completes level 6 within budget', !!plan && plan.shots <= shotBudget(LEVELS[5]));
+  check('solver plan lines are valid angles/powers',
+    !!plan && plan.lines.every((l) => l.angle >= 0 && l.angle < Math.PI * 2 && l.power >= 0.05 && l.power <= 1));
+  const unsolvable = solveLevel(
+    // The target sits inside a planet: the crash radius (5.5) is larger
+    // than the collect radius (2.1), so the comet can never reach it.
+    { pad: { x: -14, y: 0 }, planets: [{ x: 13, y: 0, r: 5, mu: 500 }], targets: [{ x: 13, y: 0, r: 1.6 }] },
+    2, { coarse: true },
+  );
+  check('solver returns null for a level it cannot finish', unsolvable === null);
+
+  // The generator: deterministic, valid, and always solvable.
+  const gen = (seed, diff, id) => generateLevel(seed, diff, id);
+  const a = gen(20261120, 2, 900);
+  const b = gen(20261120, 2, 900);
+  check('same seed + difficulty generates the same level', JSON.stringify(a) === JSON.stringify(b));
+  check('different seeds generate different levels',
+    JSON.stringify(gen(20261120, 2, 900)) !== JSON.stringify(gen(20261121, 2, 900)));
+  check('different difficulties generate different levels',
+    JSON.stringify(gen(42, 1, 900)) !== JSON.stringify(gen(42, 4, 900)));
+  check('generated level registers under its challenge id', registerGeneratedLevel(gen(777, 2, 901)) === levelById(901));
+  check('levelById still returns null for unknown ids', levelById(9999) === null);
+
+  const combos = [
+    [1, 1], [2, 1], [3, 2], [7, 2], [42, 3], [1337, 3],
+    [20261120, 2], [20261121, 3], [777, 4], [424242, 5], [99, 5], [5, 4],
+  ];
+  for (const [seed, diff] of combos) {
+    const lvl = gen(seed, diff, 950);
+    const tag = `seed ${seed} d${diff}`;
+    check(`generated ${tag}: par is 2..5`, lvl.par >= 2 && lvl.par <= 5);
+    check(`generated ${tag}: budget is par + 2`, shotBudget(lvl) === lvl.par + 2);
+    check(`generated ${tag}: has 1..3 planets and 1..3 targets`,
+      lvl.planets.length >= 1 && lvl.planets.length <= 3 && lvl.targets.length >= 1 && lvl.targets.length <= 3);
+    check(`generated ${tag}: pad inside the playfield`,
+      lvl.pad.x * lvl.pad.x + lvl.pad.y * lvl.pad.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS);
+    check(`generated ${tag}: planets and targets inside the playfield`,
+      lvl.planets.every((p) => p.x * p.x + p.y * p.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS)
+      && lvl.targets.every((t) => t.x * t.x + t.y * t.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS));
+    check(`generated ${tag}: no target overlaps a planet`,
+      lvl.targets.every((t) => lvl.planets.every((p) =>
+        Math.hypot(t.x - p.x, t.y - p.y) > p.r + t.r + 0.5)));
+    check(`generated ${tag}: no planet overlaps the pad`,
+      lvl.planets.every((p) => Math.hypot(p.x - lvl.pad.x, p.y - lvl.pad.y) > p.r + 2));
+    check(`generated ${tag}: difficulty recorded`, lvl.difficulty === diff);
+    check(`generated ${tag}: seed recorded`, lvl.seed === (seed >>> 0));
+    check(`generated ${tag}: solver completes it within budget`,
+      !!solveLevel(lvl, shotBudget(lvl), {
+        coarse: true, t0s: levelHasMovingPlanets(lvl) ? [0, 1.5, 3, 4.5] : [0],
+      }));
+  }
+}
+
 // --- save round-trip ---
 {
   const save = defaultSave();
   check('default save unlocks only level 1', save.unlocked === 1 && Object.keys(save.stars).length === 0);
+  check('default save has no daily best and no seed bests',
+    save.daily === null && Object.keys(save.seedBest).length === 0);
   save.stars = { 1: 3, 2: 2 };
   save.unlocked = 3;
   const json = serializeSave(save);
@@ -322,6 +406,21 @@ check('level not complete with targets left',
     Object.keys(parseSave('{"stars":{"9":3}}').stars).length === 0);
   check('save drops out-of-range star counts',
     Object.keys(parseSave('{"stars":{"1":9}}').stars).length === 0);
+  // Daily + seed bests round-trip and validate on load.
+  const withBest = defaultSave();
+  withBest.daily = { date: '2026-11-20', stars: 3 };
+  withBest.seedBest = { orbit42: 2, '777': 3 };
+  const bestBack = parseSave(serializeSave(withBest));
+  check('save round-trips the daily best',
+    bestBack.daily && bestBack.daily.date === '2026-11-20' && bestBack.daily.stars === 3);
+  check('save round-trips seed bests',
+    bestBack.seedBest.orbit42 === 2 && bestBack.seedBest['777'] === 3);
+  check('save drops a daily best with a bad date',
+    parseSave('{"daily":{"date":"yesterday","stars":3}}').daily === null);
+  check('save drops a daily best with out-of-range stars',
+    parseSave('{"daily":{"date":"2026-11-20","stars":9}}').daily === null);
+  check('save drops out-of-range seed bests',
+    Object.keys(parseSave('{"seedBest":{"x":9}}').seedBest).length === 0);
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);

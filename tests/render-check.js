@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.5.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.6.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -15,6 +15,12 @@
 // set, and a persisted volume slider — see the audio block after the
 // first level-1 shot, the level-3 intensity check after the save seed,
 // and the last-shot warning check below.
+// Block 6 additions (challenge modes): the menu shows the Daily Orbit
+// button with today's date, the Endless Orbit button and the seed box;
+// the daily level plays to completion (solved through the public hook)
+// and records a daily best; ?seed=777 auto-starts the same generated
+// level and records a seed best; Endless Orbit completes round 1 and
+// advances to round 2 at a higher difficulty.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -83,6 +89,62 @@ const server = http.createServer((req, res) => {
   fs.createReadStream(file).pipe(res);
 });
 
+// Plays the current level to completion through the public solveShot hook:
+// polls for a collecting line (the 3s launch window slides with the level
+// clock, so a moving-planet level eventually offers one), waits for the
+// clock to reach its launch time, launches, and repeats until the level
+// completes or the shot budget runs out.
+async function playLevelToCompletion(page, label) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const phase = await page.evaluate(() => window.__orbit.state.phase);
+    if (phase === 'complete') return;
+    if (phase === 'failed') throw new Error(`${label}: level failed (out of shots)`);
+    if (phase !== 'aim') {
+      await page.waitForFunction(
+        () => ['aim', 'complete', 'failed'].includes(window.__orbit.state.phase),
+        null, { timeout: 15000 },
+      );
+      continue;
+    }
+    let shot = null;
+    for (let p = 0; p < 30 && !shot; p++) {
+      shot = await page.evaluate(() => window.__orbit.solveShot());
+      if (!shot) await page.waitForTimeout(500);
+    }
+    if (!shot) throw new Error(`${label}: solver found no collecting line in 15s`);
+    await page.waitForFunction(
+      (t0) => window.__orbit.info().levelTime >= t0 - 0.05,
+      shot.t0, { timeout: 10000 },
+    );
+    const before = await page.evaluate(() => window.__orbit.state.shotsUsed);
+    await page.evaluate((s) => {
+      window.__orbit.aim(s.angle, s.power);
+      window.__orbit.launch();
+    }, shot);
+    await page.waitForFunction(
+      (want) => window.__orbit.state.shotsUsed > want || window.__orbit.state.phase === 'complete',
+      before, { timeout: 15000 },
+    );
+  }
+  const phase = await page.evaluate(() => window.__orbit.state.phase);
+  if (phase !== 'complete') throw new Error(`${label}: did not complete after 8 shots (phase=${phase})`);
+}
+
+// Back to the main menu from any end state (complete / failed / in-level).
+async function quitToMenu(page) {
+  const phase = await page.evaluate(() => window.__orbit.state.phase);
+  if (phase === 'complete') {
+    await page.click('#btn-menu-complete');
+  } else if (phase === 'failed') {
+    await page.click('#btn-menu-failed');
+  } else {
+    await page.keyboard.press('p');
+    await page.waitForFunction(() => window.__orbit.state.phase === 'paused', null, { timeout: 5000 });
+    await page.click('#btn-quit');
+  }
+  await page.waitForFunction(() => window.__orbit.state.phase === 'menu', null, { timeout: 5000 });
+}
+
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const port = server.address().port;
 
@@ -100,7 +162,14 @@ try {
     ...(executablePath ? { executablePath } : {}),
     args: launchArgs,
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  // The daily level is date-based, so the browser runs in the player's
+  // timezone (Asia/Bangkok) — otherwise the headless shell's UTC clock
+  // would show yesterday's daily.
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+    timezoneId: 'Asia/Bangkok',
+  });
+  const page = await context.newPage();
   page.on('console', (msg) => {
     if (msg.type() === 'error') errors.push('console: ' + msg.text());
   });
@@ -128,11 +197,23 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.5.0') throw new Error(`expected version 0.5.0, got ${version}`);
+  if (version !== '0.6.0') throw new Error(`expected version 0.6.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.5.0')) throw new Error('menu version v0.5.0 missing');
+  if (!menuText.includes('v0.6.0')) throw new Error('menu version v0.6.0 missing');
   if (!menuText.includes('/ 24')) throw new Error('menu total stars should be / 24 (8 levels)');
-  console.log('render-check: menu renders with v0.5.0');
+  console.log('render-check: menu renders with v0.6.0');
+
+  // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
+  // Endless Orbit button and the seed box are present.
+  if (!menuText.includes('Daily Orbit — 2026-11-20')) {
+    throw new Error(`daily button should show today's date, menu says: ${menuText.slice(0, 200)}`);
+  }
+  if (!menuText.includes('Endless Orbit')) throw new Error('endless button missing');
+  const seedPlaceholder = await page.getAttribute('#seed-input', 'placeholder');
+  if (!seedPlaceholder || !seedPlaceholder.includes('Seed')) {
+    throw new Error(`seed input missing, placeholder: ${seedPlaceholder}`);
+  }
+  console.log('render-check: menu shows Daily Orbit (2026-11-20), Endless Orbit, and the seed box');
 
   // Block 2: level cards show par and the star thresholds.
   const cardText = await page.textContent('#level-select');
@@ -413,6 +494,71 @@ try {
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
     null, { timeout: 15000 },
   );
+
+  // Block 6: challenge modes — daily, seed links, endless.
+  await quitToMenu(page);
+  const menuAfter = await page.textContent('#menu');
+  if (!menuAfter.includes('Daily Orbit — 2026-11-20')) {
+    throw new Error('daily button missing after quit to menu');
+  }
+
+  // Daily: one level for everyone today; solve it through the hook and
+  // complete it — the daily best is recorded in the save.
+  await page.click('#btn-daily');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const dailyHud = await page.textContent('#hud-level');
+  if (!dailyHud.includes('Daily — 2026-11-20')) throw new Error(`daily HUD wrong: ${dailyHud}`);
+  const dailyInfo = await page.evaluate(() => window.__orbit.challengeInfo());
+  if (dailyInfo.mode !== 'daily') throw new Error(`challenge mode should be daily, got ${dailyInfo.mode}`);
+  if (dailyInfo.difficulty !== 2) throw new Error(`today's daily difficulty should be 2, got ${dailyInfo.difficulty}`);
+  await playLevelToCompletion(page, 'daily');
+  const dailyBest = await page.evaluate(() => JSON.parse(window.localStorage.getItem('nor-stars') || '{}').daily);
+  if (!dailyBest || dailyBest.date !== '2026-11-20' || dailyBest.stars < 1) {
+    throw new Error(`daily best not recorded: ${JSON.stringify(dailyBest)}`);
+  }
+  console.log(`render-check: daily level complete, daily best ${dailyBest.stars} star(s) recorded`);
+  await quitToMenu(page);
+  const dailyLabel = await page.textContent('#btn-daily');
+  if (!dailyLabel.includes('★')) throw new Error(`daily button should show earned stars, got: ${dailyLabel}`);
+  console.log(`render-check: menu daily button shows the earned stars (${dailyLabel.trim()})`);
+
+  // Seed link: ?seed=777 auto-starts the same generated level; completing
+  // it records a per-seed best.
+  await page.goto(`http://127.0.0.1:${port}/?seed=777`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => window.__orbit, null, { timeout: 30000 });
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const seedHud = await page.textContent('#hud-level');
+  if (!seedHud.includes('Seed 777')) throw new Error(`seed HUD wrong: ${seedHud}`);
+  const seedInputValue = await page.evaluate(() => document.getElementById('seed-input').value);
+  if (seedInputValue !== '777') throw new Error(`seed input should be prefilled with 777, got: ${seedInputValue}`);
+  await playLevelToCompletion(page, 'seed 777');
+  const seedBest = await page.evaluate(() => JSON.parse(window.localStorage.getItem('nor-stars') || '{}').seedBest);
+  if (!seedBest || (seedBest['777'] || 0) < 1) {
+    throw new Error(`seed best not recorded: ${JSON.stringify(seedBest)}`);
+  }
+  console.log(`render-check: ?seed=777 level complete, seed best ${seedBest['777']} star(s) recorded`);
+
+  // Endless: round 1 completes, the Next button becomes "Next Round" and
+  // advances to round 2 at a higher difficulty.
+  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => window.__orbit, null, { timeout: 30000 });
+  if (await page.isVisible('#howto')) await page.click('#btn-howto-close');
+  await page.click('#btn-endless');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const endlessHud = await page.textContent('#hud-level');
+  if (!endlessHud.includes('Endless Round 1')) throw new Error(`endless HUD wrong: ${endlessHud}`);
+  await playLevelToCompletion(page, 'endless round 1');
+  const nextLabel = await page.textContent('#btn-next');
+  if (nextLabel.trim() !== 'Next Round →') throw new Error(`endless next button should say "Next Round →", got: ${nextLabel}`);
+  await page.click('#btn-next');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const round2Hud = await page.textContent('#hud-level');
+  if (!round2Hud.includes('Endless Round 2')) throw new Error(`round 2 HUD wrong: ${round2Hud}`);
+  const round2Info = await page.evaluate(() => window.__orbit.challengeInfo());
+  if (round2Info.round !== 2 || round2Info.difficulty !== 2) {
+    throw new Error(`round 2 should be difficulty 2, got: ${JSON.stringify(round2Info)}`);
+  }
+  console.log('render-check: endless round 1 complete, Next Round advances to round 2 (difficulty 2)');
 
   if (errors.length > 0) {
     throw new Error('console/page errors:\n' + errors.join('\n'));
