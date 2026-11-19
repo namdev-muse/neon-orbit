@@ -392,3 +392,51 @@ Moving targets + timed levels + difficulty balance — backlog items #11,
   check now reads trauma atomically with the hit-stop wait (the
   waitForFunction returns the feedback state itself), and the crash reads
   0.85 again.
+
+## Block 11 — 2026-11-20 06:30 Asia/Bangkok (v0.11.0)
+
+Browser playtest + bot harness + bugfix pass 1 — backlog items #45,
+#47, #37 (features_done 27 → 30/60). No new levels or mechanics this
+block: the whole campaign is now bot-verified inside the live game, and
+the game defends itself against corrupted state.
+
+- **Bot harness plays every level (#45):** the headless render check
+  now sweeps the six campaign levels no earlier section completed in
+  the browser (2, 3, 4, 5, 6, 8) through the live game's public hooks,
+  asserting completion and >= 1 star each. Together with the levels
+  already played above (1, 7, 9, 10, 11, 12) plus daily / seed /
+  endless / Time Attack level 1, all 12 campaign levels are now
+  completed in the browser in a single run — and the sweep earned 3
+  stars on every one (L2 in 1 shot, L3 in 2, L4 in 1, L5 in 2, L6 in 2,
+  L8 in 2). The Node bot still covers all 15 levels (12 campaign +
+  daily/seed/endless) within budget, 3 stars each.
+- **State audit + NaN guards (#47):** `launchState` sanitises its
+  input (NaN angle/power fall back to a still comet, ±Infinity power
+  clamps to full), and `stepFlight` ends a flight whose position or
+  velocity goes non-finite as a new `'invalid'` event instead of
+  letting NaN comparisons silently never fire — a corrupted comet used
+  to fly forever and never resolve. On top of that, `game.js` runs a
+  1-second audit while a level is running: level clock, flight state,
+  comet mesh and shot counters must all be finite and in range. A
+  corrupt flight mid-shot is ended as a lost shot; a bad clock or
+  counter restarts the level; the audit never throws, and its counts
+  are exposed through `__orbit.auditState()`. A test-only
+  `__orbit.testCorrupt('flight' | 'time')` hook lets the render check
+  exercise both paths.
+- **Pause menu (#37):** Restart Level and Quit to Menu already existed
+  but were never clicked for real — the render check now launches a
+  shot, pauses mid-flight, restarts (fresh aim, 0 shots used), pauses
+  again and quits back to the menu.
+- Tests: smoke grew to 370 checks (13 new: launchState sanitising,
+  stepFlight invalid events for NaN x/y/vx/vy and infinite position,
+  a healthy step still advancing, simulateLaunch from NaN input
+  terminating with a known outcome and finite end). The render check
+  now asserts the sweep (3 stars each), the pause buttons, a corrupted
+  flight ending cleanly as a lost shot (aim, 1 shot used), and the
+  audit catching a bad level clock and restarting the level (1
+  failure, 1 recovery, "levelTime is not finite") — all with zero
+  console errors.
+- Bug found by the smoke tests (fixed before pushing): the first
+  `launchState` guard used `Number.isFinite(power)`, so infinite power
+  fell back to a still comet instead of clamping to full speed. It now
+  clamps any non-NaN power into 0..1 and only falls back on NaN.
