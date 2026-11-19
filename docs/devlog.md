@@ -130,3 +130,38 @@ Juice pass 1: hit-stop + trauma tiers, particle bursts, shockwave rings
   collect fires a live shockwave + particles, a Level 4 crash reads
   0.93 trauma with a real hit-stop that restores, and the grazing line
   credits a slingshot — all with zero console errors.
+
+## Block 5 — 2026-11-20 03:00 Asia/Bangkok (v0.5.0)
+
+Web Audio synth SFX + music loop + mute, deepened (backlog #33, #34, #35).
+
+- **Complete SFX set (#33):** the set now covers every event — the
+  existing launch whoosh, collect chime, crash thud, slingshot sweep and
+  win arpeggio, plus a descending minor fail jingle when a level runs out
+  of shots, a rising unlock chime when a completion opens the next level
+  (it rings 450ms after the win arpeggio), and a two-tone last-shot
+  warning when the next shot is the final one. SFX and music run on
+  separate gain buses under one master gain, so their balance stays
+  independent. Every SFX name is recorded (`lastSfx` on the
+  `window.__orbit.audioState()` hook) so the bot harness and render check
+  can assert which sound fired without capturing audio.
+- **Layered music with intensity (#34):** the loop now has three layers.
+  Calm (intensity 0, levels 1–2) is the bass root progression. Mid
+  (intensity 1, levels 3+) adds an arpeggio of chord tones on the
+  off-beats. Tense (intensity 2, down to the last shot) adds a driving
+  pulse on every step. The root progression also rotates by level, so
+  later levels sound different. Intensity is recomputed on every music
+  step from the live level and shots left, so the tension pulse starts
+  the moment the last shot begins.
+- **Volume slider + mute, persisted (#35):** a volume slider sits in the
+  main menu and in the pause menu; both write one persisted setting
+  (`nor-settings.volume`, default 0.6), update the master gain live, and
+  stay in sync with each other. Mute still silences the master gain but
+  remembers the volume, and the setting survives a reload.
+- Tests: the render check now asserts the unlock chime fires after a
+  level-1 completion, the music scheduler runs at calm intensity 0 with
+  volume 0.6 unmuted, the mute toggle flips state and label and back,
+  the pause-menu volume slider sets 0.3 live, persists it and syncs the
+  menu slider, three burnt shots on level 1 fire the last-shot warning
+  with tense intensity 1, and level 3 starts at mid intensity 1 — all
+  with zero console errors.
