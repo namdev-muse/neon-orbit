@@ -296,7 +296,6 @@ Touch, keyboard-only play, responsive + camera zoom — backlog items
 Portals + shields + bounce mechanics — backlog items #8, #9, #10
 (features_done 20 → 23/60). Three new campaign levels (9–11), 33 stars
 total.
-
 - **Portals (#8):** portals come in pairs sharing a `pair` index. Flying
   into one teleports the comet out of its twin with the entry velocity
   unchanged, placed just outside the twin's trigger radius along the
@@ -340,3 +339,56 @@ total.
   nothing, so on a shielded level it could never return the crack shot
   and the render check stalled on level 10. It now returns crack-only
   shots as well.
+
+## Block 10 — 2026-11-20 06:00 Asia/Bangkok (v0.10.0)
+
+Moving targets + timed levels + difficulty balance — backlog items #11,
+#20, #24 (features_done 23 → 26/60). One new campaign level (12),
+36 stars total.
+
+- **Moving targets (#11):** a target with an `orbit` drifts on a circle
+  around a centre point at `speed` rad/s from `phase`, exactly like a
+  moving planet — `(x, y)` is its position at t = 0. The collect check
+  in `stepFlight` reads `targetPosAt(target, levelTime)`, so a shot must
+  meet the target where it is, not where it started; the preview and the
+  solver search launch times on moving-target levels the same way they
+  already did for moving planets. The meshes, rings and shield rings are
+  repositioned every frame, and each drifting target shows its orbit path
+  as a faint magenta ring. Level 12 "Moving Stars" has two of them
+  orbiting in opposite directions (0.35 and -0.45 rad/s) around one
+  planet — the solver's line waits until t0 = 6.0 and lobs slowly to meet
+  both.
+- **Time Attack (#20):** one shared 4:00 clock across campaign levels
+  1–5. Clearing a level banks its stars into the run total and advances
+  to the next; the run ends when the clock hits zero, a level runs out
+  of shots, or all five are cleared. The HUD shows a gold `⏱ M:SS`
+  timer (refreshed once per second while aiming or flying, frozen while
+  paused), the complete screen shows banked stars and time left, and a
+  full clear records the best (`timeAttackBest`: most stars, then
+  fastest) in the save — a partial run never records a best. Retry
+  restarts the whole run, since the clock cannot be rewound. The music
+  turns tense under 30 seconds on the clock.
+- **Difficulty tuning (#24):** par is now the solver's minimal shot
+  count + 1 slack shot (minimum 2), except level 10 whose par 4 is its
+  designed minimum. Retuned: L2 3→2, L4 3→2, L5 4→3, L7 3→2, L8 4→3.
+  Gauntlet (L6) was the worst offender — the bot cleared it in one slow
+  lob (63°, power 0.25) against a par of 5. Its targets are now smaller
+  (r 1.4) and spread further apart (16,9 / 17,-9 / 8,12), so the lob
+  collects one at most and the solver needs 2 shots; par 5→3. Every
+  level is still 3-starred by the solver at its new par.
+- Tests: smoke grew to 357 checks (moving-target positions and timed
+  collect/miss, solver timing on level 12, the broken Gauntlet lob, the
+  retuned pars, time attack constants and clock formatting, the
+  timeAttackBest save round-trip). The bot completes all 15 levels
+  (12 campaign + daily/seed/endless) within budget, 3 stars each, and
+  the 5-level Time Attack set in 7 solver shots. The render check now
+  asserts level 12 (two moving targets, meshes drift 0.68 units in
+  1.2s, completes through the solver hook) and Time Attack (HUD timer
+  `⏱ 4:00`, clock 239.9s at start, level 1 banks 3 stars and advances
+  to 2/5 with 238.2s left) — all with zero console errors.
+- Bug found by the render check (fixed before pushing): the crash-trauma
+  assertion read trauma in a separate evaluate after the hit-stop wait,
+  and on the slow headless frame it had decayed from 0.85 to 0.37. The
+  check now reads trauma atomically with the hit-stop wait (the
+  waitForFunction returns the feedback state itself), and the crash reads
+  0.85 again.
