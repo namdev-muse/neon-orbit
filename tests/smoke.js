@@ -1,8 +1,8 @@
 // Neon Orbit — Node smoke tests for physics.js (no DOM, no Three.js).
 import {
-  LEVELS, MAX_SPEED, PLAYFIELD_RADIUS, SUBSTEP, levelById, shotBudget,
-  starsForShots, isLevelComplete, mulberry32, generateDecor,
-  launchState, stepFlight, simulateLaunch,
+  VERSION, LEVELS, MAX_SPEED, PLAYFIELD_RADIUS, SUBSTEP, levelById, shotBudget,
+  starsForShots, starThresholds, isLevelComplete, mulberry32, generateDecor,
+  launchState, stepFlight, simulateLaunch, previewShot,
   defaultSave, serializeSave, parseSave, totalStars,
 } from '../physics.js';
 
@@ -51,10 +51,45 @@ check('fewer than par = 3 stars', starsForShots(1, 3) === 3);
 check('par+1 = 2 stars', starsForShots(4, 3) === 2);
 check('par+2 = 1 star', starsForShots(5, 3) === 1);
 check('over budget = 0 stars', starsForShots(6, 3) === 0);
+check('star thresholds match the star rule for every level',
+  LEVELS.every((l) => {
+    const t = starThresholds(l.par);
+    return t.three === l.par && t.two === l.par + 1 && t.one === l.par + 2
+      && starsForShots(t.three, l.par) === 3
+      && starsForShots(t.two, l.par) === 2
+      && starsForShots(t.one, l.par) === 1;
+  }));
+check('star thresholds for par 2 are 2/3/4',
+  JSON.stringify(starThresholds(2)) === JSON.stringify({ three: 2, two: 3, one: 4 }));
 check('level complete when all targets collected',
   isLevelComplete(LEVELS[2], [0, 1]) === true);
 check('level not complete with targets left',
   isLevelComplete(LEVELS[2], [0]) === false);
+
+// --- trajectory preview prediction ---
+{
+  check('physics version is 0.2.0', VERSION === '0.2.0');
+  const lvl = LEVELS[0];
+  const hit = previewShot(lvl, 0, 0.55);
+  check('preview of the level 1 line predicts a target hit',
+    (hit.outcome === 'collected' || hit.outcome === 'partial') && hit.collected.length === 1);
+  check('preview records trajectory points starting at the pad',
+    hit.points.length > 10 && hit.points[0][0] === lvl.pad.x && hit.points[0][1] === lvl.pad.y);
+  check('preview end sits on the collected target',
+    Math.hypot(hit.end.x - lvl.targets[0].x, hit.end.y - lvl.targets[0].y) < lvl.targets[0].r + 1);
+  const crashLevel = { pad: { x: -10, y: 0 }, planets: [{ x: 0, y: 0, r: 2, mu: 10 }], targets: [] };
+  const crash = previewShot(crashLevel, 0, 0.5);
+  check('preview of a head-on shot predicts a crash', crash.outcome === 'crash');
+  check('preview crash end sits on the planet surface',
+    Math.hypot(crash.end.x, crash.end.y) < 2.6);
+  const away = previewShot(lvl, Math.PI, 0.8);
+  check('preview of a shot aimed away predicts it flies out', away.outcome === 'lost');
+  const p1 = previewShot(LEVELS[5], 0.7, 0.8);
+  const p2 = previewShot(LEVELS[5], 0.7, 0.8);
+  check('preview is deterministic', JSON.stringify(p1.points) === JSON.stringify(p2.points));
+  check('preview respects already-collected targets',
+    previewShot(lvl, 0, 0.55, [0]).collected.length === 0);
+}
 
 // --- seeded determinism ---
 {

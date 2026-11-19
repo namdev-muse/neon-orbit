@@ -1,8 +1,10 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.1.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.2.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
-// and zero page errors, and a WebGL context exists.
+// and zero page errors, and a WebGL context exists. Also checks the Block 2
+// additions: level cards show par + star thresholds, the power meter is
+// visible while aiming, and the preview predicts the shot outcome.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -116,10 +118,16 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.1.0') throw new Error(`expected version 0.1.0, got ${version}`);
+  if (version !== '0.2.0') throw new Error(`expected version 0.2.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.1.0')) throw new Error('menu version v0.1.0 missing');
-  console.log('render-check: menu renders with v0.1.0');
+  if (!menuText.includes('v0.2.0')) throw new Error('menu version v0.2.0 missing');
+  console.log('render-check: menu renders with v0.2.0');
+
+  // Block 2: level cards show par and the star thresholds.
+  const cardText = await page.textContent('#level-select');
+  if (!cardText.includes('Par 2')) throw new Error('level card par missing');
+  if (!cardText.includes('★★★ ≤ 2')) throw new Error('level card star thresholds missing');
+  console.log('render-check: level cards show par + star thresholds');
 
   const webgl = await page.evaluate(() => {
     const c = document.querySelector('#game-container canvas');
@@ -140,7 +148,12 @@ try {
   const levelName = await page.textContent('#hud-level');
   if (!hudVisible) throw new Error('HUD not visible after PLAY');
   if (!levelName.includes('First Light')) throw new Error(`expected level 1, got: ${levelName}`);
-  console.log('render-check: PLAY starts level 1 (First Light)');
+  const hudPar = await page.textContent('#hud-par');
+  if (!hudPar.includes('Par 2')) throw new Error(`HUD par missing, got: ${hudPar}`);
+  console.log('render-check: PLAY starts level 1 (First Light), HUD shows Par 2');
+
+  // Block 2: while aiming, the power meter is visible and the preview
+  // predicts the shot outcome. Drag part-way first and inspect mid-drag.
 
   // Real mouse drag-aim from the comet pad, then release to launch.
   // Camera fit at 1280x720: half-height 28 world units, half-width 28*aspect.
@@ -155,6 +168,23 @@ try {
   await page.mouse.move(padX, padY);
   await page.mouse.down();
   await page.mouse.move(padX - 154, padY - 7, { steps: 12 });
+  const midDrag = await page.evaluate(() => ({
+    meterVisible: !document.getElementById('power-meter').classList.contains('hidden'),
+    powerLabel: document.getElementById('power-label').textContent,
+    readout: document.getElementById('aim-readout').textContent,
+    previewOutcome: window.__orbit.state.previewOutcome,
+    previewEnd: window.__orbit.state.previewEnd,
+  }));
+  if (!midDrag.meterVisible) throw new Error('power meter not visible while aiming');
+  if (!midDrag.powerLabel.startsWith('Power ')) throw new Error(`power label wrong: ${midDrag.powerLabel}`);
+  if (!midDrag.readout.includes('Predicted:')) throw new Error(`aim readout has no prediction: ${midDrag.readout}`);
+  if (!['collect', 'crash', 'lost'].includes(midDrag.previewOutcome)) {
+    throw new Error(`unexpected preview outcome: ${midDrag.previewOutcome}`);
+  }
+  if (!midDrag.previewEnd || typeof midDrag.previewEnd.x !== 'number') {
+    throw new Error('preview end point missing');
+  }
+  console.log(`render-check: mid-drag power meter "${midDrag.powerLabel}", preview predicts ${midDrag.previewOutcome}`);
   await page.mouse.up();
   await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
   console.log('render-check: drag-aim + launch starts flight');
