@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.6.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.8.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -26,6 +26,13 @@
 // level, a My Stats overlay lists best stars per level plus challenge
 // bests, and the failed screen shows attempt stats with a Level Select
 // button that returns to the campaign map.
+// Block 8 additions (touch / keyboard / responsive): a touchscreen tap
+// launches with the current aim, Enter starts the game from the menu and
+// Space launches, arrow keys adjust the aim and navigate the level grid,
+// P pauses with Resume focused and Enter resumes, Escape closes My Stats,
+// the mouse wheel / HUD buttons / + and - keys zoom the camera (clamped
+// 0.6..2.0), a two-finger pinch zooms without launching, and a 390x844
+// phone viewport shows a 2-column grid with no horizontal overflow.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -173,6 +180,7 @@ try {
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
     timezoneId: 'Asia/Bangkok',
+    hasTouch: true, // Block 8: touchscreen.tap drives the tap-to-launch test
   });
   const page = await context.newPage();
   page.on('console', (msg) => {
@@ -202,11 +210,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.7.0') throw new Error(`expected version 0.7.0, got ${version}`);
+  if (version !== '0.8.0') throw new Error(`expected version 0.8.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.7.0')) throw new Error('menu version v0.7.0 missing');
+  if (!menuText.includes('v0.8.0')) throw new Error('menu version v0.8.0 missing');
   if (!menuText.includes('/ 24')) throw new Error('menu total stars should be / 24 (8 levels)');
-  console.log('render-check: menu renders with v0.7.0');
+  console.log('render-check: menu renders with v0.8.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -629,6 +637,176 @@ try {
     throw new Error(`round 2 should be difficulty 2, got: ${JSON.stringify(round2Info)}`);
   }
   console.log('render-check: endless round 1 complete, Next Round advances to round 2 (difficulty 2)');
+
+  // Block 8: touch, keyboard-only play, responsive + camera zoom.
+  // Fresh load so the menu is untouched (Play focused, no shots spent).
+  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => window.__orbit, null, { timeout: 30000 });
+  if (await page.isVisible('#howto')) await page.click('#btn-howto-close');
+
+  // Keyboard-only: Enter on the menu (nothing focused) starts the game,
+  // arrow keys adjust the aim, Space launches.
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  console.log('render-check: Enter on the menu starts the game (keyboard-only)');
+  const angleBefore = await page.evaluate(() => window.__orbit.state.aimAngle);
+  await page.keyboard.press('ArrowLeft');
+  const angleAfter = await page.evaluate(() => window.__orbit.state.aimAngle);
+  if (angleAfter <= angleBefore) {
+    throw new Error(`ArrowLeft should increase the aim angle, ${angleBefore} -> ${angleAfter}`);
+  }
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
+  console.log('render-check: ArrowLeft adjusts aim, Space launches (keyboard-only)');
+  await page.waitForFunction(() => window.__orbit.state.shotsUsed >= 1, null, { timeout: 15000 });
+
+  // P pauses; the pause overlay focuses Resume, and Enter resumes.
+  await page.keyboard.press('p');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'paused', null, { timeout: 5000 });
+  const resumeFocused = await page.evaluate(() => document.activeElement && document.activeElement.id);
+  if (resumeFocused !== 'btn-resume') {
+    throw new Error(`pause should focus Resume, got: ${resumeFocused}`);
+  }
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  console.log('render-check: P pauses with Resume focused, Enter resumes');
+
+  // Escape closes My Stats back to the menu.
+  await quitToMenu(page);
+  await page.click('#btn-stats');
+  await page.waitForFunction(() => !document.getElementById('stats').classList.contains('hidden'), null, { timeout: 5000 });
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden'), null, { timeout: 5000 });
+  console.log('render-check: Escape closes My Stats back to the menu');
+
+  // Arrow keys on the menu move focus between the level buttons, wrapping
+  // around the ends of the grid.
+  await page.evaluate(() => document.activeElement && document.activeElement.blur());
+  await page.keyboard.press('ArrowRight');
+  const focusedLevel = await page.evaluate(() => document.activeElement && document.activeElement.className);
+  if (!focusedLevel || !focusedLevel.includes('level-btn')) {
+    throw new Error(`ArrowRight on the menu should focus a level button, got: ${focusedLevel}`);
+  }
+  await page.keyboard.press('ArrowLeft');
+  const wrappedLevel = await page.evaluate(() => document.activeElement && document.activeElement.textContent);
+  if (!wrappedLevel || !wrappedLevel.includes('Carousel')) {
+    throw new Error(`ArrowLeft should wrap focus to the last level (Carousel), got: ${wrappedLevel}`);
+  }
+  console.log('render-check: menu arrow keys move focus between level buttons and wrap');
+
+  // Camera zoom: wheel, HUD buttons, + / - keys, all clamped 0.6..2.0.
+  await page.evaluate(() => window.__orbit.selectLevel(1));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.evaluate(() => window.__orbit.setZoom(1));
+  const zoom0 = await page.evaluate(() => window.__orbit.zoom());
+  await page.mouse.move(640, 360);
+  await page.mouse.wheel(0, -240);
+  const zoomIn = await page.evaluate(() => window.__orbit.zoom());
+  if (zoomIn <= zoom0) throw new Error(`wheel up should zoom in, ${zoom0} -> ${zoomIn}`);
+  await page.mouse.wheel(0, 240);
+  const zoomOut = await page.evaluate(() => window.__orbit.zoom());
+  if (Math.abs(zoomOut - zoom0) > 0.001) {
+    throw new Error(`wheel down should restore the zoom, got ${zoomOut} (was ${zoom0})`);
+  }
+  console.log(`render-check: mouse wheel zooms ${zoom0} -> ${zoomIn.toFixed(2)} -> ${zoomOut.toFixed(2)}`);
+  await page.click('#btn-zoom-in');
+  const zoomBtn = await page.evaluate(() => ({
+    z: window.__orbit.zoom(),
+    label: document.getElementById('zoom-label').textContent,
+  }));
+  if (Math.abs(zoomBtn.z - zoomOut * 1.25) > 0.001) {
+    throw new Error(`zoom-in button should step 25%, got ${zoomBtn.z}`);
+  }
+  if (zoomBtn.label !== `${Math.round(zoomBtn.z * 100)}%`) {
+    throw new Error(`zoom label should track the zoom, got ${zoomBtn.label}`);
+  }
+  await page.keyboard.press('+');
+  const zoomKey = await page.evaluate(() => window.__orbit.zoom());
+  if (zoomKey <= zoomBtn.z) throw new Error(`+ key should zoom in, ${zoomBtn.z} -> ${zoomKey}`);
+  await page.evaluate(() => window.__orbit.setZoom(99));
+  if ((await page.evaluate(() => window.__orbit.zoom())) !== 2) {
+    throw new Error('zoom should clamp at 2.0');
+  }
+  await page.evaluate(() => window.__orbit.setZoom(0.01));
+  if ((await page.evaluate(() => window.__orbit.zoom())) !== 0.6) {
+    throw new Error('zoom should clamp at 0.6');
+  }
+  console.log('render-check: HUD zoom buttons, + / - keys, and 0.6..2.0 clamping all work');
+  await page.evaluate(() => window.__orbit.setZoom(1));
+
+  // Tap-to-launch: aim a collecting line through the hook, then a real
+  // touchscreen tap launches with that aim — no drag needed.
+  const tapShot = await page.evaluate(() => window.__orbit.solveShot());
+  if (!tapShot) throw new Error('solver found no collecting line for the tap test');
+  await page.evaluate((s) => window.__orbit.aim(s.angle, s.power), tapShot);
+  await page.touchscreen.tap(640, 360);
+  await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
+  console.log('render-check: touchscreen tap launches with the current aim');
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
+    null, { timeout: 15000 },
+  );
+
+  // Pinch zoom: two pointers spreading apart zooms in, and lifting a
+  // finger ends the pinch without launching a shot.
+  await page.evaluate(() => window.__orbit.selectLevel(1));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.evaluate(() => window.__orbit.setZoom(1));
+  const pinch = await page.evaluate(() => {
+    const canvas = document.querySelector('#game-container canvas');
+    const opts = (id, x, y) => ({
+      pointerId: id, clientX: x, clientY: y, bubbles: true, cancelable: true, isPrimary: id === 1,
+    });
+    canvas.dispatchEvent(new PointerEvent('pointerdown', opts(1, 400, 360)));
+    canvas.dispatchEvent(new PointerEvent('pointerdown', opts(2, 880, 360)));
+    const before = window.__orbit.zoom();
+    canvas.dispatchEvent(new PointerEvent('pointermove', opts(1, 300, 360)));
+    canvas.dispatchEvent(new PointerEvent('pointermove', opts(2, 980, 360)));
+    const after = window.__orbit.zoom();
+    canvas.dispatchEvent(new PointerEvent('pointerup', opts(1, 300, 360)));
+    canvas.dispatchEvent(new PointerEvent('pointerup', opts(2, 980, 360)));
+    return { before, after, phase: window.__orbit.state.phase };
+  });
+  if (pinch.after <= pinch.before) {
+    throw new Error(`pinch-out should zoom in, ${pinch.before} -> ${pinch.after}`);
+  }
+  if (pinch.phase !== 'aim') throw new Error(`pinch must not launch, phase is ${pinch.phase}`);
+  console.log(`render-check: pinch-out zooms ${pinch.before} -> ${pinch.after.toFixed(2)} without launching`);
+
+  // Small screens: a 390x844 phone viewport renders the menu with no
+  // horizontal overflow, the level grid drops to 2 columns, and Enter
+  // still starts the game with the zoom buttons visible.
+  const small = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    timezoneId: 'Asia/Bangkok',
+  });
+  const smallPage = await small.newPage();
+  smallPage.on('console', (msg) => {
+    if (msg.type() === 'error') errors.push('small console: ' + msg.text());
+  });
+  smallPage.on('pageerror', (err) => errors.push('small pageerror: ' + String(err)));
+  if (!process.env.NO_THREE_CACHE) {
+    const cachedSmall = await fetchThreeModule();
+    await smallPage.route(THREE_URL, (route) => route.fulfill({ path: cachedSmall }));
+  }
+  await smallPage.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await smallPage.waitForFunction(() => window.__orbit, null, { timeout: 30000 });
+  const overflow = await smallPage.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  if (overflow > 0) throw new Error(`small viewport has ${overflow}px of horizontal overflow`);
+  const cols = await smallPage.evaluate(
+    () => getComputedStyle(document.getElementById('level-select')).gridTemplateColumns.split(' ').length,
+  );
+  if (cols !== 2) throw new Error(`small viewport level grid should be 2 columns, got ${cols}`);
+  if (await smallPage.isVisible('#howto')) await smallPage.click('#btn-howto-close');
+  await smallPage.evaluate(() => document.activeElement && document.activeElement.blur());
+  await smallPage.keyboard.press('Enter');
+  await smallPage.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  if (!await smallPage.isVisible('#btn-zoom-in')) {
+    throw new Error('zoom-in button not visible on the small viewport');
+  }
+  console.log('render-check: 390x844 viewport — no overflow, 2-column grid, Enter starts the game, zoom buttons visible');
+  await small.close();
 
   if (errors.length > 0) {
     throw new Error('console/page errors:\n' + errors.join('\n'));

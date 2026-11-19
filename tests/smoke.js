@@ -8,6 +8,7 @@ import {
   defaultSave, serializeSave, parseSave, totalStars,
   dateSeed, dateKey, seedFromString, parseSeedParam, dailyDifficulty,
   endlessDifficulty, generateLevel, registerGeneratedLevel, solveShot, solveLevel,
+  clampZoom, ZOOM_MIN, ZOOM_MAX, isTapGesture, TAP_MAX_MS, TAP_MAX_PX, focusStep,
 } from '../physics.js';
 
 let passed = 0, failed = 0;
@@ -93,7 +94,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.6.0', VERSION === '0.6.0');
+  check('physics version is 0.8.0', VERSION === '0.8.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -433,6 +434,28 @@ check('level not complete with targets left',
     parseSave('{"daily":{"date":"2026-11-20","stars":9}}').daily === null);
   check('save drops out-of-range seed bests',
     Object.keys(parseSave('{"seedBest":{"x":9}}').seedBest).length === 0);
+}
+
+// --- Block 8: camera zoom, tap-to-launch, level-grid roving focus ---
+{
+  check('zoom bounds are 0.6..2.0', ZOOM_MIN === 0.6 && ZOOM_MAX === 2.0);
+  check('clampZoom passes 1 through', clampZoom(1) === 1);
+  check('clampZoom keeps 1.5', clampZoom(1.5) === 1.5);
+  check('clampZoom floors at 0.6', clampZoom(0.1) === 0.6);
+  check('clampZoom caps at 2.0', clampZoom(99) === 2.0);
+  check('clampZoom falls back to 1 for NaN', clampZoom(NaN) === 1);
+  check('clampZoom falls back to 1 for a non-number', clampZoom('far') === 1);
+  check('tap window is 300ms / 14px', TAP_MAX_MS === 300 && TAP_MAX_PX === 14);
+  check('a quick still press is a tap', isTapGesture(120, 5) === true);
+  check('a tap at the exact limits still counts', isTapGesture(300, 14) === true);
+  check('a slow press is not a tap', isTapGesture(301, 5) === false);
+  check('a press that moves too far is not a tap', isTapGesture(100, 15) === false);
+  check('roving focus starts at the first button going forward', focusStep(-1, 8, 1) === 0);
+  check('roving focus starts at the last button going backward', focusStep(-1, 8, -1) === 7);
+  check('roving focus wraps forward off the end', focusStep(7, 8, 1) === 0);
+  check('roving focus wraps backward off the start', focusStep(0, 8, -1) === 7);
+  check('roving focus steps forward inside the grid', focusStep(3, 8, 1) === 4);
+  check('roving focus on an empty grid is -1', focusStep(0, 0, 1) === -1);
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);
