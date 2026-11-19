@@ -45,8 +45,14 @@
   <div class="panel">
     <h1>NEON ORBIT</h1>
     <p class="tagline">Slingshot your comet around planets. Collect every star.</p>
-    <p class="version">v0.5.0 &middot; Three.js 0.160.0</p>
+    <p class="version">v0.6.0 &middot; Three.js 0.160.0</p>
     <button id="btn-play" class="btn primary" type="button">Play</button>
+    <button id="btn-daily" class="btn" type="button">Daily Orbit</button>
+    <button id="btn-endless" class="btn" type="button">Endless Orbit</button>
+    <div class="seed-row">
+      <input id="seed-input" type="text" maxlength="32" placeholder="Seed — try orbit42" aria-label="Seed for a generated level">
+      <button id="btn-seed" class="btn small" type="button">Play Seed</button>
+    </div>
     <button id="btn-howto" class="btn" type="button">How to Play</button>
     <label class="slider-row">Volume
       <input id="volume-range-menu" type="range" min="0" max="100" value="60" aria-label="Volume">
@@ -70,6 +76,8 @@
       <li><strong>Black holes</strong> pull hard and <strong>swallow</strong> comets that cross their event horizon — arc around them, never through them.</li>
       <li>Skim close past a planet for a <strong>slingshot</strong> flash — and watch the shockwave ring when you collect a star.</li>
       <li><strong>Moving planets</strong> orbit their centre (the faint ring shows the path). The trajectory preview follows them — time your launch for when the bend lines up.</li>
+      <li><strong>Daily Orbit</strong> is one fresh puzzle every day — the same level for everyone. <strong>Endless Orbit</strong> keeps dealing harder levels until you run out of shots.</li>
+      <li>Type a <strong>seed</strong> (or open a <strong>?seed=</strong> link) to replay the exact same generated level as a friend.</li>
       <li>Beat par for <strong>3 stars</strong>. Finish a level to unlock the next one.</li>
     </ul>
     <h3>Controls</h3>

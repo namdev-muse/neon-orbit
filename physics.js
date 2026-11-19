@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -113,8 +113,245 @@ export const LEVELS = [
   },
 ];
 
+// ---------------------------------------------------------------- seeded levels
+// Challenge modes (daily / seed / endless) all run on generated levels:
+// one deterministic generator + one solver, so the same seed always makes
+// the same level for everyone, and every generated level is verified
+// solvable before it is offered. Generated levels live in a registry so
+// levelById / shotBudget / starsForShots work on them exactly like the
+// handcrafted campaign levels; they never touch the campaign unlock chain.
+const generatedLevels = new Map();
+
+export function registerGeneratedLevel(level) {
+  generatedLevels.set(level.id, level);
+  return level;
+}
+
 export function levelById(id) {
-  return LEVELS.find((l) => l.id === id) || null;
+  return LEVELS.find((l) => l.id === id) || generatedLevels.get(id) || null;
+}
+
+// Daily seed: YYYYMMDD as a number (20261120) — the same level for
+// everyone, every day, and a new one at midnight.
+export function dateSeed(date) {
+  return date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate();
+}
+
+export function dateKey(date) {
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${date.getFullYear()}-${m}-${d}`;
+}
+
+// FNV-1a hash so ?seed=orbit42 is stable, shareable and short.
+export function seedFromString(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+// A seed parameter accepts a plain number ("777") or any word ("orbit42").
+// Returns a uint32 seed, or null for an empty/invalid value.
+export function parseSeedParam(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim().slice(0, 32);
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return Number(s) >>> 0;
+  return seedFromString(s);
+}
+
+// Daily difficulty rotates 2..4 by day of year so the daily puzzle varies.
+export function dailyDifficulty(date) {
+  const start = new Date(date.getFullYear(), 0, 0);
+  const doy = Math.floor((date - start) / 86400000);
+  return 2 + (doy % 3);
+}
+
+// Endless rounds escalate one difficulty step per round.
+export function endlessDifficulty(round) {
+  return Math.max(1, round);
+}
+
+// Auto-aim solver: grid-searches angle/power (and launch times on moving
+// levels) for the shot that collects the most, then refines around it.
+// `coarse` uses a wide grid for a fast solvability check; the fine grid
+// is the bot harness's full search. Returns the best shot found.
+export function solveShot(level, collected = [], opts = {}) {
+  const coarse = !!opts.coarse;
+  const angleStep = coarse ? 8 : 2;
+  const powerStep = coarse ? 0.25 : 0.1;
+  const powerMin = coarse ? 0.25 : 0.15;
+  const t0s = opts.t0s || (levelHasMovingPlanets(level)
+    ? [0, 0.75, 1.5, 2.25, 3, 3.75, 4.5, 5.25, 6] : [0]);
+  let best = null;
+  const score = (res) => {
+    let s = res.collected.length * 10000;
+    if (res.outcome === 'crash') s -= 5000;
+    if (res.outcome === 'swallowed') s -= 5000;
+    if (res.outcome === 'timeout') s -= 2000;
+    if (res.outcome === 'lost') s -= 500;
+    s -= res.steps * 0.05;
+    return s;
+  };
+  const consider = (angle, power, t0) => {
+    const res = simulateLaunch(level, angle, power, collected, { record: false, t0 });
+    const sc = score(res);
+    if (!best || sc > best.score) best = { angle, power, t0, score: sc, res };
+  };
+  for (const t0 of t0s) {
+    for (let deg = 0; deg < 360; deg += angleStep) {
+      for (let p = powerMin; p <= 1.001; p += powerStep) {
+        consider((deg * Math.PI) / 180, p, t0);
+      }
+    }
+  }
+  if (!coarse) {
+    for (let d = -2; d <= 2; d += 0.25) {
+      for (let dp = -0.1; dp <= 0.1001; dp += 0.02) {
+        const angle = best.angle + (d * Math.PI) / 180;
+        const power = Math.max(0.05, Math.min(1, best.power + dp));
+        consider(angle, power, best.t0);
+      }
+    }
+  }
+  return best;
+}
+
+// Plays a level shot by shot with the solver. Returns { shots, lines } on
+// completion within `budget`, or null when the solver cannot finish it.
+// `lines` is the plan (angle/power/t0 per shot) the bot and the generator
+// both use; `coarse` keeps the search cheap for generation checks.
+export function solveLevel(level, budget, opts = {}) {
+  const collected = [];
+  const lines = [];
+  let shots = 0;
+  while (collected.length < level.targets.length && shots < budget) {
+    const best = solveShot(level, collected, opts);
+    if (!best) return null;
+    shots++;
+    lines.push({ angle: best.angle, power: best.power, t0: best.t0 });
+    for (const i of best.res.collected) {
+      if (!collected.includes(i)) collected.push(i);
+    }
+  }
+  if (collected.length < level.targets.length) return null;
+  return { shots, lines };
+}
+
+const GENERATED_NAMES = [
+  'Stardust Drift', 'Nebula Pass', 'Gravity Well', 'Comet Run',
+  'Slingshot Alley', 'Void Crossing', 'Starlight Bend', 'Orbit Dance',
+  'Deep Field', 'Perihelion',
+];
+
+// One candidate layout from a seeded RNG. Planets sit on the pad -> target
+// corridor with a perpendicular offset, so most candidates are bendable
+// and the solver usually passes on the first try.
+function genCandidate(rand, difficulty) {
+  const targetCount = Math.min(3, 1 + Math.floor(difficulty / 2) + (rand() < 0.3 ? 1 : 0));
+  const planetCount = Math.min(3, 1 + Math.floor(difficulty / 2));
+  const pad = { x: -16 + rand() * 2, y: (rand() * 2 - 1) * 8 };
+  const targets = [];
+  const xs = [];
+  for (let i = 0; i < targetCount; i++) xs.push(10 + rand() * 6);
+  if (targetCount === 1) {
+    targets.push({ x: xs[0], y: (rand() * 2 - 1) * 9, r: 1.6 });
+  } else if (targetCount === 2) {
+    targets.push({ x: xs[0], y: 3 + rand() * 7, r: 1.6 });
+    targets.push({ x: xs[1], y: -3 - rand() * 7, r: 1.6 });
+  } else {
+    const ys = [7 + rand() * 4, -1 + rand() * 2, -7 - rand() * 4];
+    for (let i = 0; i < 3; i++) targets.push({ x: xs[i], y: ys[i], r: 1.6 });
+  }
+  const cx = targets.reduce((a, t) => a + t.x, 0) / targets.length;
+  const cy = targets.reduce((a, t) => a + t.y, 0) / targets.length;
+  const dx = cx - pad.x, dy = cy - pad.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = -dy / len, py = dx / len; // perpendicular to the corridor
+  const colors = [0x7c3aed, 0x8b5cf6, 0x6d28d9, 0x5b21b6];
+  const planets = [];
+  for (let i = 0; i < planetCount; i++) {
+    const r = 1.8 + rand() * 1.2;
+    const mu = 100 + rand() * 180 + difficulty * 10;
+    let placed = null;
+    for (let tries = 0; tries < 25 && !placed; tries++) {
+      const t = 0.3 + rand() * 0.4;
+      const off = (rand() * 2 - 1) * 7;
+      const x = pad.x + dx * t + px * off;
+      const y = pad.y + dy * t + py * off;
+      if (x * x + y * y > (PLAYFIELD_RADIUS - 2) * (PLAYFIELD_RADIUS - 2)) continue;
+      if (Math.hypot(x - pad.x, y - pad.y) < r + 2.5) continue;
+      if (targets.some((tg) => Math.hypot(x - tg.x, y - tg.y) < r + tg.r + 1.2)) continue;
+      if (planets.some((q) => Math.hypot(x - q.x, y - q.y) < r + q.r + 1.5)) continue;
+      placed = { x, y, r, mu, color: colors[i % colors.length] };
+    }
+    if (placed) planets.push(placed);
+  }
+  const blackHoles = [];
+  if (difficulty >= 3 && rand() < 0.5) {
+    const tg = targets[Math.floor(rand() * targets.length)];
+    for (let tries = 0; tries < 20; tries++) {
+      const a = rand() * Math.PI * 2;
+      const d = 4.5 + rand() * 2;
+      const x = tg.x + Math.cos(a) * d, y = tg.y + Math.sin(a) * d;
+      if (x * x + y * y > (PLAYFIELD_RADIUS - 2) * (PLAYFIELD_RADIUS - 2)) continue;
+      if (Math.hypot(x - pad.x, y - pad.y) < 4) continue;
+      if (planets.some((q) => Math.hypot(x - q.x, y - q.y) < q.r + 3)) continue;
+      if (targets.some((t) => Math.hypot(x - t.x, y - t.y) < t.r + 3)) continue;
+      blackHoles.push({ x, y, r: 1.4 + rand() * 0.4, mu: 260 + rand() * 90 });
+      break;
+    }
+  }
+  if (difficulty >= 2 && rand() < 0.45 && planets.length > 0) {
+    const p = planets[Math.floor(rand() * planets.length)];
+    const radius = Math.min(18, Math.max(4, Math.hypot(p.x, p.y)));
+    // The orbit circle must stay clear of the pad and every target, or
+    // the planet would sweep over them mid-flight.
+    const clear = (x, y, extra) => Math.abs(Math.hypot(x, y) - radius) > p.r + extra + 0.5;
+    if (clear(pad.x, pad.y, 1.5) && targets.every((t) => clear(t.x, t.y, t.r))) {
+      p.orbit = { cx: 0, cy: 0, radius, speed: 0.3 + rand() * 0.35, phase: Math.atan2(p.y, p.x) };
+    }
+  }
+  return { pad, planets, targets, blackHoles };
+}
+
+// Builds a deterministic generated level for a seed + difficulty, verified
+// solvable by the coarse solver (retries with derived seeds; falls back to
+// a known-good layout so a challenge mode never has an impossible level).
+// `id` is the registered challenge id (900 daily, 901 seed, 902 endless).
+// Par comes from the solver's shot count, clamped to 2..5.
+export function generateLevel(seed, difficulty, id) {
+  const name = GENERATED_NAMES[(seed >>> 0) % GENERATED_NAMES.length];
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const rand = mulberry32((seed + attempt * 2654435761) >>> 0);
+    const level = genCandidate(rand, difficulty);
+    level.id = id;
+    level.name = name;
+    level.seed = seed >>> 0;
+    level.difficulty = difficulty;
+    const budget = level.targets.length * 2 + 2;
+    const plan = solveLevel(level, budget, {
+      coarse: true,
+      t0s: levelHasMovingPlanets(level) ? [0, 1.5, 3, 4.5] : [0],
+    });
+    if (plan) {
+      level.par = Math.max(2, Math.min(5, plan.shots));
+      level.hint = `Seeded orbit — difficulty ${difficulty}. Bend around the planets and collect every target.`;
+      return level;
+    }
+  }
+  // Fallback: the Level 1 line (angle 0, power 0.55) completes this layout.
+  return {
+    id, name, seed: seed >>> 0, difficulty,
+    par: 2,
+    hint: `Seeded orbit — difficulty ${difficulty}. Bend around the planet and collect the target.`,
+    pad: { x: -14, y: 0 },
+    planets: [{ x: 0, y: 6, r: 2, mu: 80, color: 0x7c3aed }],
+    targets: [{ x: 12, y: 0, r: 1.6 }],
+  };
 }
 
 export function shotBudget(level) {
@@ -351,15 +588,30 @@ export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0) 
 
 // ---------------------------------------------------------------- save data
 export function defaultSave() {
-  return { stars: {}, unlocked: 1, seenHowTo: false };
+  return { stars: {}, unlocked: 1, seenHowTo: false, daily: null, seedBest: {} };
 }
 
 // stars: { levelId: 0..3 }, unlocked: highest unlocked level id.
+// daily: { date: 'YYYY-MM-DD', stars: 0..3 } — best on today's daily level.
+// seedBest: { seedLabel: 0..3 } — best stars per shared seed (capped at 100).
 export function serializeSave(save) {
+  const daily = save.daily && typeof save.daily.date === 'string'
+    && /^\d{4}-\d{2}-\d{2}$/.test(save.daily.date)
+    && Number.isInteger(save.daily.stars)
+    ? { date: save.daily.date, stars: Math.max(0, Math.min(3, save.daily.stars)) }
+    : null;
+  const seedBest = {};
+  if (save.seedBest && typeof save.seedBest === 'object') {
+    for (const [k, v] of Object.entries(save.seedBest).slice(0, 100)) {
+      if (Number.isInteger(v) && v >= 0 && v <= 3) seedBest[String(k).slice(0, 32)] = v;
+    }
+  }
   return JSON.stringify({
     stars: save.stars || {},
     unlocked: Math.max(1, Math.min(LEVELS.length, save.unlocked || 1)),
     seenHowTo: !!save.seenHowTo,
+    daily,
+    seedBest,
   });
 }
 
@@ -380,6 +632,18 @@ export function parseSave(json) {
       save.unlocked = Math.max(1, Math.min(LEVELS.length, raw.unlocked));
     }
     save.seenHowTo = !!raw.seenHowTo;
+    if (raw.daily && typeof raw.daily === 'object'
+      && typeof raw.daily.date === 'string'
+      && /^\d{4}-\d{2}-\d{2}$/.test(raw.daily.date)
+      && Number.isInteger(raw.daily.stars)
+      && raw.daily.stars >= 0 && raw.daily.stars <= 3) {
+      save.daily = { date: raw.daily.date, stars: raw.daily.stars };
+    }
+    if (raw.seedBest && typeof raw.seedBest === 'object') {
+      for (const [k, v] of Object.entries(raw.seedBest).slice(0, 100)) {
+        if (Number.isInteger(v) && v >= 0 && v <= 3) save.seedBest[String(k).slice(0, 32)] = v;
+      }
+    }
     return save;
   } catch {
     return defaultSave();

@@ -1,4 +1,4 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.5.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.6.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
@@ -8,9 +8,11 @@ import {
   generateDecor, launchState, stepFlight, previewShot, planetPosAt,
   levelHasMovingPlanets, levelBlackHoles, FEEDBACK, isNearMiss,
   defaultSave, serializeSave, parseSave, totalStars,
+  dateSeed, dateKey, dailyDifficulty, endlessDifficulty, parseSeedParam,
+  generateLevel, registerGeneratedLevel, solveShot,
 } from './physics.js';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -22,9 +24,16 @@ const TRAIL_MAX = 48;
 const PARTICLE_MAX = 240;
 
 // ---------------------------------------------------------------- state
+// Challenge-mode ids: generated levels register under these ids and
+// never touch the campaign unlock chain (campaign levels are 1..8).
+const DAILY_ID = 900;
+const SEED_ID = 901;
+const ENDLESS_ID = 902;
+
 const state = {
   version: VERSION,
   phase: 'menu', // menu | howto | aim | fly | complete | failed | paused
+  mode: 'campaign', // campaign | daily | seed | endless
   levelId: 1,
   levelName: '',
   shotsUsed: 0,
@@ -39,6 +48,11 @@ const state = {
   stars: 0,
   unlocked: 1,
   phaseBeforePause: 'aim',
+  challengeSeed: 0,
+  seedLabel: '',
+  endlessRound: 0,
+  endlessBaseSeed: 0,
+  dailyDate: '',
 };
 
 function loadSave() {
@@ -602,11 +616,23 @@ function showOnly(id) {
   else showOverlay(null);
 }
 
+function challengeBest(mode) {
+  if (mode === 'daily') {
+    return (save.daily && save.daily.date === state.dailyDate) ? save.daily.stars : 0;
+  }
+  if (mode === 'seed') return save.seedBest[state.seedLabel || String(state.challengeSeed)] || 0;
+  return 0;
+}
+
 function updateHUD() {
   const level = levelById(state.levelId);
   const budget = level ? shotBudget(level) : 0;
-  $('hud-level').textContent = level ? `Level ${level.id} — ${level.name}` : '';
-  const best = save.stars[state.levelId] || 0;
+  $('hud-level').textContent = level
+    ? (state.mode === 'campaign' ? `Level ${level.id} — ${level.name}` : level.name)
+    : '';
+  const best = state.mode === 'campaign'
+    ? (save.stars[state.levelId] || 0)
+    : challengeBest(state.mode);
   $('hud-stars').textContent = '★'.repeat(best) + '☆'.repeat(3 - best);
   $('hud-par').textContent = level ? `Par ${level.par}` : '';
   $('hud-shots').textContent = `Shots ${state.shotsUsed}/${budget}`;
@@ -678,6 +704,21 @@ function renderLevelSelect() {
     wrap.appendChild(btn);
   }
   $('total-stars').textContent = String(totalStars(save));
+  updateChallengeMenu();
+}
+
+// The Daily button shows today's date plus the best stars earned on it so
+// far today; the seed input keeps whatever ?seed= (or the last typed seed)
+// put there.
+function updateChallengeMenu() {
+  const dailyBtn = $('btn-daily');
+  if (dailyBtn) {
+    const today = dateKey(new Date());
+    const best = (save.daily && save.daily.date === today) ? save.daily.stars : 0;
+    dailyBtn.textContent = best > 0
+      ? `Daily Orbit — ${today} · ${'★'.repeat(best)}${'☆'.repeat(3 - best)}`
+      : `Daily Orbit — ${today}`;
+  }
 }
 
 // ---------------------------------------------------------------- level flow
@@ -867,15 +908,15 @@ let levelTime = 0; // seconds since the level started; moving planets follow it
 let previewRefresh = 0; // throttle for re-previewing while planets move
 const tmpNewly = [];
 
-function startLevel(id) {
-  const level = levelById(id);
-  if (!level || id > save.unlocked) return;
+function beginLevel(level, mode) {
+  if (!level) return;
   window.clearTimeout(shotTimer);
-  state.levelId = id;
+  state.mode = mode;
+  state.levelId = level.id;
   state.levelName = level.name;
   state.shotsUsed = 0;
   state.collected = [];
-  state.stars = save.stars[id] || 0;
+  state.stars = mode === 'campaign' ? (save.stars[level.id] || 0) : challengeBest(mode);
   state.targetsRemaining = level.targets.length;
   flight = null;
   flightEnding = false;
@@ -891,6 +932,65 @@ function startLevel(id) {
   showOnly(null);
   ensureAudio();
   startMusic();
+}
+
+function startLevel(id) {
+  const level = levelById(id);
+  if (!level || id > save.unlocked) return;
+  beginLevel(level, 'campaign');
+}
+
+// ---------------------------------------------------------------- challenge modes
+// Daily: one seed per calendar day (YYYYMMDD), so everyone plays the same
+// level; difficulty rotates 2..4 by day of year.
+function startDaily() {
+  const now = new Date();
+  state.dailyDate = dateKey(now);
+  const level = generateLevel(dateSeed(now), dailyDifficulty(now), DAILY_ID);
+  level.name = `Daily — ${state.dailyDate}`;
+  registerGeneratedLevel(level);
+  beginLevel(level, 'daily');
+}
+
+// Seeded: ?seed= in the URL (or the menu input) replays the same generated
+// level — a number ("777") or any word ("orbit42"); difficulty 2..4 comes
+// from the seed itself, so a shared link always plays the same puzzle.
+function startSeed(raw) {
+  const seed = parseSeedParam(raw);
+  if (seed === null) return false;
+  const label = String(raw).trim().slice(0, 32);
+  state.challengeSeed = seed;
+  state.seedLabel = label;
+  const level = generateLevel(seed, 2 + (seed % 3), SEED_ID);
+  level.name = `Seed ${label.slice(0, 16)}`;
+  registerGeneratedLevel(level);
+  beginLevel(level, 'seed');
+  return true;
+}
+
+// Endless: a fresh run seed per attempt, one difficulty step per round.
+// Round n plays seed (base + n * 7919) at difficulty n.
+function startEndless() {
+  state.endlessBaseSeed = 100000 + Math.floor(Math.random() * 900000);
+  startEndlessRound(1);
+}
+
+function startEndlessRound(round) {
+  state.endlessRound = round;
+  const seed = (state.endlessBaseSeed + round * 7919) >>> 0;
+  const level = generateLevel(seed, endlessDifficulty(round), ENDLESS_ID);
+  level.name = `Endless Round ${round}`;
+  registerGeneratedLevel(level);
+  beginLevel(level, 'endless');
+}
+
+// Retry / restart / replay: replays the exact same challenge level (same
+// seed and round), so a retry is never a different puzzle.
+function restartCurrent() {
+  if (state.mode === 'daily') startDaily();
+  else if (state.mode === 'seed') startSeed(state.seedLabel || String(state.challengeSeed));
+  else if (state.mode === 'endless') startEndlessRound(state.endlessRound);
+  else startLevel(state.levelId);
 }
 
 function launch() {
@@ -943,15 +1043,26 @@ function completeLevel() {
   const level = levelById(state.levelId);
   const stars = starsForShots(state.shotsUsed, level.par);
   state.stars = stars;
-  if (!save.stars[state.levelId] || save.stars[state.levelId] < stars) {
-    save.stars[state.levelId] = stars;
-  }
+  // Campaign completions unlock the next level; challenge completions
+  // record a best (daily / per-seed) instead and never touch the unlocks.
   let unlockedNew = false;
-  if (state.levelId < LEVELS.length && save.unlocked <= state.levelId) {
-    save.unlocked = state.levelId + 1;
-    unlockedNew = true;
+  if (state.mode === 'campaign') {
+    if (!save.stars[state.levelId] || save.stars[state.levelId] < stars) {
+      save.stars[state.levelId] = stars;
+    }
+    if (state.levelId < LEVELS.length && save.unlocked <= state.levelId) {
+      save.unlocked = state.levelId + 1;
+      unlockedNew = true;
+    }
+    state.unlocked = save.unlocked;
+  } else if (state.mode === 'daily') {
+    if (!save.daily || save.daily.date !== state.dailyDate || save.daily.stars < stars) {
+      save.daily = { date: state.dailyDate, stars };
+    }
+  } else if (state.mode === 'seed') {
+    const key = state.seedLabel || String(state.challengeSeed);
+    if (!save.seedBest[key] || save.seedBest[key] < stars) save.seedBest[key] = stars;
   }
-  state.unlocked = save.unlocked;
   persistSave();
   state.phase = 'complete';
   state.targetsRemaining = 0;
@@ -963,9 +1074,27 @@ function completeLevel() {
     spawnShockwave(t.x, t.y, 0xffd166, 7, 0.9);
   }
   $('complete-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
-  $('complete-shots').textContent =
-    `Finished in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'} (par ${level.par})`;
-  $('btn-next').classList.toggle('hidden', state.levelId >= LEVELS.length);
+  let shotsLine = `Finished in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'} (par ${level.par})`;
+  if (state.mode === 'daily' && save.daily) {
+    shotsLine += ` · Daily best: ${'★'.repeat(save.daily.stars)}${'☆'.repeat(3 - save.daily.stars)}`;
+  } else if (state.mode === 'seed') {
+    const b = save.seedBest[state.seedLabel || String(state.challengeSeed)] || 0;
+    shotsLine += ` · Seed best: ${'★'.repeat(b)}${'☆'.repeat(3 - b)}`;
+  } else if (state.mode === 'endless') {
+    shotsLine += ` · Round ${state.endlessRound} cleared`;
+  }
+  $('complete-shots').textContent = shotsLine;
+  // Endless: the Next button advances to the next round. Daily / seed:
+  // no next level — replay the same seed or go back to the menu.
+  const nextBtn = $('btn-next');
+  if (state.mode === 'endless') {
+    nextBtn.classList.remove('hidden');
+    nextBtn.textContent = 'Next Round →';
+  } else {
+    nextBtn.textContent = 'Next Level';
+    nextBtn.classList.toggle('hidden',
+      state.mode !== 'campaign' || state.levelId >= LEVELS.length);
+  }
   updateHUD();
   renderLevelSelect();
   showOnly('complete');
@@ -975,8 +1104,12 @@ function failLevel() {
   const level = levelById(state.levelId);
   state.phase = 'failed';
   sfx.fail();
-  $('failed-text').textContent =
-    `${level.name}: out of shots with ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left. Try a different arc.`;
+  let text = `${level.name}: out of shots with ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left. Try a different arc.`;
+  if (state.mode === 'endless') {
+    const cleared = state.endlessRound - 1;
+    text = `Run over — you cleared ${cleared} round${cleared === 1 ? '' : 's'} of Endless Orbit. Retry the round or start a new run.`;
+  }
+  $('failed-text').textContent = text;
   updateHUD();
   showOnly('failed');
 }
@@ -1138,6 +1271,8 @@ renderer.domElement.addEventListener('pointercancel', () => { dragging = false; 
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 
 window.addEventListener('keydown', (e) => {
+  // Typing a seed in the menu input must not trigger game hotkeys.
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
   if (e.key === 'm' || e.key === 'M') { toggleMute(); return; }
   if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
     if (state.phase === 'paused') resumeGame();
@@ -1147,7 +1282,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') {
     if (state.phase === 'aim' || state.phase === 'fly' || state.phase === 'complete' || state.phase === 'failed') {
       ensureAudio();
-      startLevel(state.levelId);
+      restartCurrent();
     }
     return;
   }
@@ -1189,35 +1324,67 @@ function wireButtons() {
     sfx.click();
     save.seenHowTo = true;
     persistSave();
+    // A ?seed= link keeps working after the first-visit how-to: close it
+    // straight into the linked level instead of the menu.
+    if (pendingSeed !== null) {
+      startSeed(urlSeedRaw);
+      return;
+    }
     state.phase = 'menu';
     showOnly('menu');
   });
   $('btn-next').addEventListener('click', () => {
     ensureAudio();
     sfx.click();
-    if (state.levelId < LEVELS.length) startLevel(state.levelId + 1);
+    if (state.mode === 'endless') startEndlessRound(state.endlessRound + 1);
+    else if (state.levelId < LEVELS.length) startLevel(state.levelId + 1);
     else quitToMenu();
   });
   $('btn-replay').addEventListener('click', () => {
     ensureAudio();
     sfx.click();
-    startLevel(state.levelId);
+    restartCurrent();
   });
   $('btn-menu-complete').addEventListener('click', () => { sfx.click(); quitToMenu(); });
   $('btn-retry').addEventListener('click', () => {
     ensureAudio();
     sfx.click();
-    startLevel(state.levelId);
+    restartCurrent();
   });
   $('btn-menu-failed').addEventListener('click', () => { sfx.click(); quitToMenu(); });
   $('btn-resume').addEventListener('click', () => { sfx.click(); resumeGame(); });
   $('btn-restart').addEventListener('click', () => {
     ensureAudio();
     sfx.click();
-    startLevel(state.levelId);
+    restartCurrent();
   });
   $('btn-quit').addEventListener('click', () => { sfx.click(); quitToMenu(); });
   $('btn-pause').addEventListener('click', () => { sfx.click(); pauseGame(); });
+  // Challenge modes: daily (one level per day), endless (escalating
+  // rounds), and a seed box — type a seed or open a ?seed= link to replay
+  // the exact same generated level as a friend.
+  $('btn-daily').addEventListener('click', () => {
+    ensureAudio();
+    sfx.click();
+    startDaily();
+  });
+  $('btn-endless').addEventListener('click', () => {
+    ensureAudio();
+    sfx.click();
+    startEndless();
+  });
+  $('btn-seed').addEventListener('click', () => {
+    ensureAudio();
+    if (startSeed($('seed-input').value)) {
+      sfx.click();
+    } else {
+      $('seed-input').focus();
+      $('seed-input').placeholder = 'Type a seed first';
+    }
+  });
+  $('seed-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') $('btn-seed').click();
+  });
   $('btn-mute-menu').addEventListener('click', () => { ensureAudio(); toggleMute(); });
   $('btn-mute-hud').addEventListener('click', () => { ensureAudio(); toggleMute(); });
   $('btn-mute-pause').addEventListener('click', () => { ensureAudio(); toggleMute(); });
@@ -1358,6 +1525,36 @@ window.__orbit = {
   selectLevel: (id) => { ensureAudio(); startLevel(id); },
   aim: (angle, power) => { if (state.phase === 'aim') setAim(angle, power); },
   launch: () => launch(),
+  // Challenge-mode hooks (bot harness / render check).
+  playDaily: () => { ensureAudio(); startDaily(); },
+  playSeed: (raw) => { ensureAudio(); return startSeed(raw); },
+  playEndless: () => { ensureAudio(); startEndless(); },
+  // Best collecting shot from the current aim clock (coarse grid, launch
+  // times from now up to 3s ahead): the render check waits for the clock
+  // to reach the returned t0, then launches — on moving-planet levels
+  // that means waiting for the bend to line up.
+  solveShot: () => {
+    const level = levelById(state.levelId);
+    if (!level || state.phase !== 'aim') return null;
+    const t0s = [0, 0.5, 1, 1.5, 2, 2.5, 3].map((d) => levelTime + d);
+    const best = solveShot(level, state.collected, { coarse: true, t0s });
+    if (!best || best.res.collected.length === 0) return null;
+    return {
+      angle: best.angle, power: best.power, t0: best.t0,
+      collected: best.res.collected.length, outcome: best.res.outcome,
+    };
+  },
+  challengeInfo: () => ({
+    mode: state.mode,
+    seed: state.challengeSeed,
+    seedLabel: state.seedLabel || null,
+    round: state.endlessRound,
+    difficulty: (() => {
+      const level = levelById(state.levelId);
+      return level && typeof level.difficulty === 'number' ? level.difficulty : null;
+    })(),
+    dailyDate: state.dailyDate,
+  }),
   info: () => {
     const level = levelById(state.levelId);
     return {
@@ -1397,6 +1594,14 @@ window.__orbit = {
 };
 
 // ---------------------------------------------------------------- init
+// A ?seed= link opens that exact generated level (after the how-to on a
+// first visit, so the link still works for a brand-new player).
+const urlSeedRaw = new URLSearchParams(window.location.search).get('seed');
+const pendingSeed = parseSeedParam(urlSeedRaw);
+if (pendingSeed !== null) {
+  const seedInput = $('seed-input');
+  if (seedInput) seedInput.value = String(urlSeedRaw).trim().slice(0, 32);
+}
 document.querySelector('.version').textContent = `v${VERSION} · Three.js ${THREE_VERSION}`;
 fitCamera();
 wireButtons();
@@ -1406,6 +1611,8 @@ renderLevelSelect();
 if (!save.seenHowTo) {
   state.phase = 'howto';
   showOnly('howto');
+} else if (pendingSeed !== null) {
+  startSeed(urlSeedRaw);
 } else {
   showOnly('menu');
 }

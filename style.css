@@ -265,6 +265,32 @@ html, body {
 .level-btn .lvl-stars { display: block; color: var(--gold); font-size: 13px; letter-spacing: 2px; min-height: 16px; }
 .level-btn .lvl-par { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
 
+/* ---------- Seed row (menu) ---------- */
+.seed-row {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.seed-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  font-size: 15px;
+  color: var(--text);
+  background: rgba(11, 6, 32, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.seed-row input:focus {
+  outline: none;
+  border-color: var(--cyan);
+  box-shadow: 0 0 12px rgba(34, 211, 238, 0.5);
+}
+
+.seed-row .btn { margin: 0; width: auto; }
+
 /* ---------- Pause slider ---------- */
 .slider-row {
   display: flex;

@@ -6,7 +6,7 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.5.0
+**Version:** v0.6.0
 
 ## How to play
 
@@ -33,6 +33,21 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 - Beat par for **3 stars** (par+1 = 2 stars, within budget = 1 star).
   Finishing a level unlocks the next one. Each level card and the HUD show
   the par and the exact star thresholds.
+
+## Daily, seeds & Endless
+
+- **Daily Orbit** is one fresh puzzle every day — the seed is the calendar
+  date, so everyone plays the same level and the menu shows your best
+  stars on it. Difficulty rotates 2–4 by day of year.
+- **Seeds:** type a seed in the menu (a number like `777` or a word like
+  `orbit42`) or open a `?seed=` link to replay the exact same generated
+  level as a friend. Your best stars per seed are saved.
+- **Endless Orbit** deals a new generated level every round, one difficulty
+  step harder each time, until you run out of shots. Retry replays the
+  same round; finishing a round advances to the next.
+- Every generated level is verified solvable by the same auto-aim solver
+  the bot harness uses before it is offered — a challenge mode never has
+  an impossible level. Par comes from the solver's shot count.
 
 ## Levels
 
@@ -80,6 +95,15 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
   progression rotates per level. SFX and music run on separate buses
   under one master gain; the volume slider (menu + pause menu) and the
   mute toggle persist in `nor-settings`.
+- Seeded levels: `generateLevel(seed, difficulty, id)` in `physics.js`
+  builds a deterministic layout (planets on the pad → target corridor,
+  optional black hole at difficulty 3+, optional moving planet at 2+)
+  and verifies it with the shared `solveLevel` grid-search solver before
+  offering it; par comes from the solver's shot count. Daily uses the
+  calendar date as the seed, `?seed=` hashes a word or passes a number
+  through, Endless escalates one difficulty step per round. Generated
+  levels register under ids 900–902 and never touch the campaign unlock
+  chain; daily and per-seed bests persist in the save.
 - Best stars per level and settings persist in localStorage (`nor-stars`,
   `nor-settings`).
 
@@ -94,8 +118,9 @@ python3 -m http.server 8123
 
 ```sh
 npm test            # smoke tests + bot harness
-node tests/smoke.js # physics / levels / save round-trip (111 checks)
-node tests/bot.js   # auto-aim solver plays all 8 levels to completion
+node tests/smoke.js # physics / levels / save round-trip (259 checks)
+node tests/bot.js   # auto-aim solver plays all 8 levels + 3 generated
+                    # challenge levels to completion
 node tests/render-check.js  # headless Chromium: menu renders, a run starts,
                             # a launch moves the comet, zero console errors
 ```
