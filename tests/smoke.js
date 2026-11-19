@@ -415,6 +415,18 @@ check('level not complete with targets left',
     bestBack.daily && bestBack.daily.date === '2026-11-20' && bestBack.daily.stars === 3);
   check('save round-trips seed bests',
     bestBack.seedBest.orbit42 === 2 && bestBack.seedBest['777'] === 3);
+  // Endless best (Block 7): rounds cleared in one run, round-trips and
+  // validates like the other bests; old saves without it default to 0.
+  const withEndless = defaultSave();
+  withEndless.endlessBest = 5;
+  check('save round-trips the endless best',
+    parseSave(serializeSave(withEndless)).endlessBest === 5);
+  check('save defaults endless best to 0 for old saves',
+    parseSave('{"stars":{},"unlocked":1}').endlessBest === 0);
+  check('save clamps an out-of-range endless best',
+    parseSave('{"endlessBest":250}').endlessBest === 99);
+  check('save drops a non-integer endless best',
+    parseSave('{"endlessBest":"many"}').endlessBest === 0);
   check('save drops a daily best with a bad date',
     parseSave('{"daily":{"date":"yesterday","stars":3}}').daily === null);
   check('save drops a daily best with out-of-range stars',

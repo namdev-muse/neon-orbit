@@ -21,6 +21,11 @@
 // and records a daily best; ?seed=777 auto-starts the same generated
 // level and records a seed best; Endless Orbit completes round 1 and
 // advances to round 2 at a higher difficulty.
+// Block 7 additions (UI): the menu shows a campaign progress bar (levels
+// cleared + stars earned) with a gold NEXT ring on the next uncompleted
+// level, a My Stats overlay lists best stars per level plus challenge
+// bests, and the failed screen shows attempt stats with a Level Select
+// button that returns to the campaign map.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -197,11 +202,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.6.0') throw new Error(`expected version 0.6.0, got ${version}`);
+  if (version !== '0.7.0') throw new Error(`expected version 0.7.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.6.0')) throw new Error('menu version v0.6.0 missing');
+  if (!menuText.includes('v0.7.0')) throw new Error('menu version v0.7.0 missing');
   if (!menuText.includes('/ 24')) throw new Error('menu total stars should be / 24 (8 levels)');
-  console.log('render-check: menu renders with v0.6.0');
+  console.log('render-check: menu renders with v0.7.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -221,6 +226,24 @@ try {
   if (!cardText.includes('★★★ ≤ 2')) throw new Error('level card star thresholds missing');
   console.log('render-check: level cards show par + star thresholds');
 
+  // Block 7: campaign progress bar + NEXT ring on the next uncompleted
+  // level, and the My Stats overlay with a per-level best-stars table.
+  const progressText = await page.textContent('#campaign-progress');
+  if (!progressText.includes('Campaign — 0/8 cleared')) {
+    throw new Error(`campaign progress wrong: ${progressText}`);
+  }
+  if (!progressText.includes('0 / 24 stars')) {
+    throw new Error(`campaign stars wrong: ${progressText}`);
+  }
+  const nextCard = await page.evaluate(() => {
+    const el = document.querySelector('.level-btn.current');
+    return el ? el.textContent : null;
+  });
+  if (!nextCard || !nextCard.includes('First Light') || !nextCard.includes('NEXT')) {
+    throw new Error(`next level card should be First Light with a NEXT tag, got: ${nextCard}`);
+  }
+  console.log('render-check: campaign progress 0/8 cleared, 0/24 stars, NEXT ring on First Light');
+
   const webgl = await page.evaluate(() => {
     const c = document.querySelector('#game-container canvas');
     if (!c) return false;
@@ -234,6 +257,30 @@ try {
   if (await page.isVisible('#howto')) {
     await page.click('#btn-howto-close');
   }
+
+  // Block 7: the My Stats overlay lists best stars per level (8 rows,
+  // locked levels marked) plus the campaign totals and challenge bests,
+  // and closes back to the menu.
+  await page.click('#btn-stats');
+  await page.waitForFunction(() => !document.getElementById('stats').classList.contains('hidden'), null, { timeout: 5000 });
+  const statsRows = await page.evaluate(() => document.querySelectorAll('#stats-body tr').length);
+  if (statsRows !== 8) throw new Error(`stats table should have 8 rows, got ${statsRows}`);
+  const statsTotals = await page.textContent('#stats-totals');
+  if (!statsTotals.includes('Campaign: 0 / 24 stars · 0 / 8 levels cleared')) {
+    throw new Error(`stats totals wrong: ${statsTotals}`);
+  }
+  const statsChallenge = await page.textContent('#stats-challenge');
+  if (!statsChallenge.includes('Daily best today: ☆☆☆') || !statsChallenge.includes('Endless best: 0 rounds')) {
+    throw new Error(`stats challenge line wrong: ${statsChallenge}`);
+  }
+  const statsFirstRow = await page.evaluate(() => document.querySelector('#stats-body tr').textContent);
+  if (!statsFirstRow.includes('First Light') || !statsFirstRow.includes('☆☆☆')) {
+    throw new Error(`stats first row wrong: ${statsFirstRow}`);
+  }
+  console.log('render-check: My Stats shows 8 rows, 0/24 stars, daily + endless bests');
+  await page.click('#btn-stats-close');
+  await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden'), null, { timeout: 5000 });
+
   await page.click('#btn-play');
   await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
   const hudVisible = await page.isVisible('#hud');
@@ -381,6 +428,29 @@ try {
   const tense = await page.evaluate(() => window.__orbit.audioState().intensity);
   if (tense !== 1) throw new Error(`last-shot intensity should be 1, got ${tense}`);
   console.log('render-check: last-shot warning fired, music at tense intensity 1');
+
+  // Block 7: burn the last shot — the level fails, the failed screen
+  // shows the attempt stats (shots used vs budget, par, banked best),
+  // and Level Select returns to the campaign map.
+  await page.evaluate(() => {
+    window.__orbit.aim(Math.PI / 2, 1.0);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(() => window.__orbit.state.phase === 'failed', null, { timeout: 15000 });
+  const failedText = await page.textContent('#failed-stats');
+  if (!failedText.includes('Shots used: 4 / 4 · Par 2')) {
+    throw new Error(`failed stats wrong: ${failedText}`);
+  }
+  if (!failedText.includes('Best on this level: ★★★')) {
+    throw new Error(`failed stats should show the banked best: ${failedText}`);
+  }
+  console.log(`render-check: failed screen shows attempt stats (${failedText.trim()})`);
+  await page.click('#btn-level-select');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'menu', null, { timeout: 5000 });
+  if (!await page.isVisible('#level-select')) {
+    throw new Error('level select not visible after Level Select');
+  }
+  console.log('render-check: Level Select returns to the campaign map');
 
   // Block 3: level 7 "Event Horizon" has a black hole; the bot-verified
   // line (-10 degrees, full power) arcs over it and completes the level.
