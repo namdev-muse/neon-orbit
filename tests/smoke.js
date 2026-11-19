@@ -2,13 +2,14 @@
 import {
   VERSION, LEVELS, MAX_SPEED, PLAYFIELD_RADIUS, SUBSTEP, levelById, shotBudget,
   starsForShots, starThresholds, isLevelComplete, mulberry32, generateDecor,
-  launchState, stepFlight, simulateLaunch, previewShot, planetPosAt,
-  levelHasMovingPlanets, levelBlackHoles, levelPortals, levelBouncePads,
+  launchState, stepFlight, simulateLaunch, previewShot, planetPosAt, targetPosAt,
+  levelHasMovingPlanets, levelHasMovingTargets, levelMovingTargets, levelBlackHoles, levelPortals, levelBouncePads,
   targetHits, FEEDBACK, FEEDBACK_TIERS,
   NEAR_MISS_BAND, isNearMiss, COMET_RADIUS,
   defaultSave, serializeSave, parseSave, totalStars,
   dateSeed, dateKey, seedFromString, parseSeedParam, dailyDifficulty,
   endlessDifficulty, generateLevel, registerGeneratedLevel, solveShot, solveLevel,
+  TIME_ATTACK_LEVEL_IDS, TIME_ATTACK_SECONDS, formatClock,
   clampZoom, ZOOM_MIN, ZOOM_MAX, isTapGesture, TAP_MAX_MS, TAP_MAX_PX, focusStep,
 } from '../physics.js';
 
@@ -21,8 +22,8 @@ function check(name, cond) {
 function approx(a, b, eps = 1e-9) { return Math.abs(a - b) <= eps; }
 
 // --- level definitions ---
-check('11 levels defined', LEVELS.length === 11);
-check('level ids are 1..11 in order', LEVELS.every((l, i) => l.id === i + 1));
+check('12 levels defined', LEVELS.length === 12);
+check('level ids are 1..12 in order', LEVELS.every((l, i) => l.id === i + 1));
 check('every level has a name', LEVELS.every((l) => typeof l.name === 'string' && l.name.length > 0));
 check('every level has a hint', LEVELS.every((l) => typeof l.hint === 'string' && l.hint.length > 0));
 check('every level has a pad inside the playfield',
@@ -73,6 +74,18 @@ check('no target overlaps a black hole',
     const dx = t.x - b.x, dy = t.y - b.y;
     return dx * dx + dy * dy > (b.r + t.r + 1) * (b.r + t.r + 1);
   }))));
+check('moving targets never sweep over a planet or the pad',
+  LEVELS.every((l) => levelMovingTargets(l).every((t) => {
+    const o = t.orbit;
+    const clear = (x, y, extra) => {
+      const d = Math.hypot(x - o.cx, y - o.cy);
+      return Math.abs(d - o.radius) > t.r + extra + 0.5;
+    };
+    return l.planets.every((p) => clear(p.x, p.y, p.r))
+      && clear(l.pad.x, l.pad.y, 1.5)
+      // A moving target's whole orbit stays inside the playfield.
+      && Math.hypot(o.cx, o.cy) + o.radius + t.r < PLAYFIELD_RADIUS;
+  })));
 check('moving planets never sweep over a target or the pad',
   LEVELS.every((l) => l.planets.every((p) => {
     if (!p.orbit) return true;
@@ -90,6 +103,11 @@ check('level 9 has one portal pair', levelPortals(LEVELS[8]).length === 2
 check('level 10 has two shielded targets',
   LEVELS[9].targets.length === 2 && LEVELS[9].targets.every((t) => targetHits(t) === 2));
 check('level 11 has one bounce pad', levelBouncePads(LEVELS[10]).length === 1);
+check('level 12 has two moving targets',
+  LEVELS[11].targets.length === 2 && levelHasMovingTargets(LEVELS[11])
+  && levelMovingTargets(LEVELS[11]).length === 2);
+check('levels 1-11 have no moving targets',
+  LEVELS.slice(0, 11).every((l) => !levelHasMovingTargets(l)));
 check('levels 1-8 have no portals, bounce pads or shielded targets',
   LEVELS.slice(0, 8).every((l) => levelPortals(l).length === 0
     && levelBouncePads(l).length === 0
@@ -123,7 +141,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.9.0', VERSION === '0.9.0');
+  check('physics version is 0.10.0', VERSION === '0.10.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -431,7 +449,7 @@ check('level not complete with targets left',
   check('save round-trips unlocked level', back.unlocked === 3);
   check('total stars sums correctly', totalStars(back) === 5);
   check('garbage save text falls back to defaults', parseSave('not json').unlocked === 1);
-  check('save clamps unlocked into range', parseSave('{"unlocked":99}').unlocked === 11);
+  check('save clamps unlocked into range', parseSave('{"unlocked":99}').unlocked === 12);
   check('save drops stars for unknown levels',
     Object.keys(parseSave('{"stars":{"99":3}}').stars).length === 0);
   check('save drops out-of-range star counts',
@@ -463,6 +481,21 @@ check('level not complete with targets left',
     parseSave('{"daily":{"date":"2026-11-20","stars":9}}').daily === null);
   check('save drops out-of-range seed bests',
     Object.keys(parseSave('{"seedBest":{"x":9}}').seedBest).length === 0);
+  // Time Attack best (Block 10): { stars 0..15, seconds 0..240 }, null by
+  // default and for old saves; invalid values are dropped on load.
+  const withTA = defaultSave();
+  withTA.timeAttackBest = { stars: 12, seconds: 201 };
+  check('save round-trips the time attack best',
+    JSON.stringify(parseSave(serializeSave(withTA)).timeAttackBest)
+    === JSON.stringify({ stars: 12, seconds: 201 }));
+  check('save defaults time attack best to null for old saves',
+    parseSave('{"stars":{},"unlocked":1}').timeAttackBest === null);
+  check('save drops a time attack best with out-of-range stars',
+    parseSave('{"timeAttackBest":{"stars":16,"seconds":200}}').timeAttackBest === null);
+  check('save drops a time attack best with out-of-range seconds',
+    parseSave('{"timeAttackBest":{"stars":12,"seconds":241}}').timeAttackBest === null);
+  check('save drops a time attack best with a non-integer field',
+    parseSave('{"timeAttackBest":{"stars":12,"seconds":"fast"}}').timeAttackBest === null);
 }
 
 // --- Block 8: camera zoom, tap-to-launch, level-grid roving focus ---
@@ -607,6 +640,93 @@ check('level not complete with targets left',
     check('level 10 solver plan takes 4 shots (two hits per shielded target)',
       !!plan10 && plan10.shots === 4);
   }
+}
+
+// --- Block 10: moving targets, time attack, difficulty tuning ---
+{
+  // targetPosAt: static targets stay put, orbiting targets travel the circle.
+  const still = { x: 3, y: 4, r: 1.6 };
+  check('static target position does not depend on time',
+    targetPosAt(still, 0).x === 3 && targetPosAt(still, 9.5).y === 4);
+  const mover = { x: 12, y: 0, r: 1.6, orbit: { cx: 10, cy: 0, radius: 2, speed: 0.5, phase: 0 } };
+  check('orbiting target starts at its phase position',
+    approx(targetPosAt(mover, 0).x, 12) && approx(targetPosAt(mover, 0).y, 0));
+  check('orbiting target is on the far side half a period later',
+    approx(targetPosAt(mover, Math.PI / 0.5).x, 8, 1e-6)
+    && approx(Math.abs(targetPosAt(mover, Math.PI / 0.5).y), 0, 1e-6));
+  check('orbiting target stays on its orbit circle',
+    approx(Math.hypot(targetPosAt(mover, 1.7).x - 10, targetPosAt(mover, 1.7).y), 2, 1e-6));
+  check('orbiting target position is deterministic for the same t',
+    JSON.stringify(targetPosAt(mover, 3.7)) === JSON.stringify(targetPosAt(mover, 3.7)));
+  check('level 12 has two moving targets, level 1 has none',
+    levelHasMovingTargets(LEVELS[11]) && !levelHasMovingTargets(LEVELS[0]));
+
+  // A launch must meet the target where it is, not where it started:
+  // the comet (speed 11) reaches x=13 at ~1.18s, and the target is at
+  // (13,0) when 2*(t0+1.18) is a multiple of 2*pi (t0 ~= 1.96). Half a
+  // period earlier (t0 ~= 0.39) it sits at (7,0), far from the line.
+  const movingLevel = {
+    pad: { x: 0, y: 0 }, planets: [],
+    targets: [{ x: 13, y: 0, r: 1.6, orbit: { cx: 10, cy: 0, radius: 3, speed: 2, phase: 0 } }],
+  };
+  const onTime = simulateLaunch(movingLevel, 0, 0.5, [], { t0: 1.96 });
+  check('a launch timed to meet the moving target collects it',
+    onTime.outcome === 'collected' && onTime.collected.length === 1);
+  const offTime = simulateLaunch(movingLevel, 0, 0.5, [], { t0: 0.39 });
+  check('the same launch half a period early misses the moving target',
+    offTime.outcome !== 'collected' && offTime.collected.length === 0);
+  const pA = previewShot(movingLevel, 0, 0.5, [], 1.96);
+  const pB = previewShot(movingLevel, 0, 0.5, [], 0.39);
+  check('preview follows the launch time for moving targets',
+    pA.collected.length === 1 && pB.collected.length === 0);
+
+  // The solver completes level 12 within budget, timing its launches.
+  const plan12 = solveLevel(LEVELS[11], shotBudget(LEVELS[11]));
+  check('solver completes level 12 "Moving Stars" within budget',
+    !!plan12 && plan12.shots <= shotBudget(LEVELS[11]));
+  if (plan12) {
+    check('solver earns at least 1 star on level 12',
+      starsForShots(plan12.shots, LEVELS[11].par) >= 1);
+    check('solver plan on level 12 uses a nonzero launch time (waits for the drift)',
+      plan12.lines.some((l) => l.t0 > 0));
+  }
+
+  // Difficulty tuning: par is the solver's minimal shot count + 1 slack
+  // shot (minimum 2), except level 10 whose par 4 is its designed
+  // minimum (two hits per shielded target). Level 6's old slow lob
+  // (63deg, power 0.25) collected all three targets; the spread-out,
+  // smaller targets break it.
+  check('retuned pars: L2=2, L4=2, L5=3, L6=3, L7=2, L8=3, L12=2',
+    LEVELS[1].par === 2 && LEVELS[3].par === 2 && LEVELS[4].par === 3
+    && LEVELS[5].par === 3 && LEVELS[6].par === 2 && LEVELS[7].par === 3
+    && LEVELS[11].par === 2);
+  check('unchanged pars: L1=2, L3=3, L9=3, L10=4, L11=3',
+    LEVELS[0].par === 2 && LEVELS[2].par === 3 && LEVELS[8].par === 3
+    && LEVELS[9].par === 4 && LEVELS[10].par === 3);
+  check('every level is still 3-starred by the solver at its new par',
+    LEVELS.every((l) => {
+      const plan = solveLevel(l, shotBudget(l));
+      return !!plan && starsForShots(plan.shots, l.par) === 3;
+    }));
+  {
+    const lob = simulateLaunch(LEVELS[5], (63 * Math.PI) / 180, 0.25);
+    check('level 6 slow lob no longer collects all three targets', lob.collected.length < 3);
+    const plan6 = solveLevel(LEVELS[5], shotBudget(LEVELS[5]));
+    check('level 6 solver now needs 2 shots', !!plan6 && plan6.shots === 2);
+  }
+
+  // Time Attack: five levels, one 4:00 clock, M:SS display.
+  check('time attack runs levels 1-5 in order',
+    JSON.stringify(TIME_ATTACK_LEVEL_IDS) === JSON.stringify([1, 2, 3, 4, 5]));
+  check('time attack clock is 240 seconds', TIME_ATTACK_SECONDS === 240);
+  check('formatClock shows 4:00 for 240s', formatClock(240) === '4:00');
+  check('formatClock shows 3:42 for 222s', formatClock(222) === '3:42');
+  check('formatClock pads single-digit seconds', formatClock(7) === '0:07');
+  check('formatClock shows 0:00 at zero', formatClock(0) === '0:00');
+  check('formatClock clamps negative time to 0:00', formatClock(-5) === '0:00');
+  check('formatClock rounds a fractional second up', formatClock(239.2) === '4:00');
+  check('time attack levels are all campaign levels',
+    TIME_ATTACK_LEVEL_IDS.every((id) => !!levelById(id)));
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);

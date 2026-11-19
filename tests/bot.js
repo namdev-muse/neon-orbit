@@ -4,8 +4,9 @@
 // challenge levels: today's daily level, a shared seed, and an endless
 // round — each must complete within budget with >= 1 star.
 import {
-  LEVELS, shotBudget, starsForShots, solveLevel,
+  LEVELS, shotBudget, starsForShots, solveLevel, levelById,
   dateSeed, dailyDifficulty, parseSeedParam, generateLevel,
+  TIME_ATTACK_LEVEL_IDS,
 } from '../physics.js';
 
 let failures = 0;
@@ -43,6 +44,22 @@ playLevel(seeded, shotBudget(seeded), { coarse: true, t0s: [0, 1.5, 3, 4.5] });
 const endless = generateLevel((424242 + 3 * 7919) >>> 0, 3, 902);
 endless.name = 'Endless Round 3';
 playLevel(endless, shotBudget(endless), { coarse: true, t0s: [0, 1.5, 3, 4.5] });
+
+// Time Attack set (Block 10): the five timed levels must all complete
+// within budget — a run that cannot be finished is not a mode.
+let taShots = 0;
+for (const id of TIME_ATTACK_LEVEL_IDS) {
+  const level = levelById(id);
+  const plan = solveLevel(level, shotBudget(level));
+  if (!plan) {
+    failures++;
+    console.error(`  BOT FAIL: time attack level ${id} not completed within budget`);
+  } else {
+    taShots += plan.shots;
+    console.log(`Time Attack level ${id} "${level.name}": COMPLETE in ${plan.shots} shots (par ${level.par})`);
+  }
+}
+console.log(`Time Attack set: ${taShots} solver shots across 5 levels`);
 
 if (failures > 0) {
   console.error(`\nbot: FAILED (${failures} level(s))`);

@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.9.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.10.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -39,6 +39,11 @@
 // and collect on the second, and level 11 "Bounce House" has a bounce
 // pad the bot-verified line (37.5deg, power 0.59) reflects off to
 // collect a target.
+// Block 10 additions (moving targets / time attack / difficulty): level
+// 12 "Moving Stars" has two moving targets whose mesh positions change
+// over time and completes through the solver hook; Time Attack starts a
+// 4:00 clock across levels 1-5, shows the HUD timer, and advances to
+// level 2 after the first clear with the clock still running.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -216,11 +221,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.9.0') throw new Error(`expected version 0.9.0, got ${version}`);
+  if (version !== '0.10.0') throw new Error(`expected version 0.10.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.9.0')) throw new Error('menu version v0.9.0 missing');
-  if (!menuText.includes('/ 33')) throw new Error('menu total stars should be / 33 (11 levels)');
-  console.log('render-check: menu renders with v0.9.0');
+  if (!menuText.includes('v0.10.0')) throw new Error('menu version v0.10.0 missing');
+  if (!menuText.includes('/ 36')) throw new Error('menu total stars should be / 36 (12 levels)');
+  console.log('render-check: menu renders with v0.10.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -228,6 +233,7 @@ try {
     throw new Error(`daily button should show today's date, menu says: ${menuText.slice(0, 200)}`);
   }
   if (!menuText.includes('Endless Orbit')) throw new Error('endless button missing');
+  if (!menuText.includes('Time Attack')) throw new Error('time attack button missing');
   const seedPlaceholder = await page.getAttribute('#seed-input', 'placeholder');
   if (!seedPlaceholder || !seedPlaceholder.includes('Seed')) {
     throw new Error(`seed input missing, placeholder: ${seedPlaceholder}`);
@@ -243,10 +249,10 @@ try {
   // Block 7: campaign progress bar + NEXT ring on the next uncompleted
   // level, and the My Stats overlay with a per-level best-stars table.
   const progressText = await page.textContent('#campaign-progress');
-  if (!progressText.includes('Campaign — 0/11 cleared')) {
+  if (!progressText.includes('Campaign — 0/12 cleared')) {
     throw new Error(`campaign progress wrong: ${progressText}`);
   }
-  if (!progressText.includes('0 / 33 stars')) {
+  if (!progressText.includes('0 / 36 stars')) {
     throw new Error(`campaign stars wrong: ${progressText}`);
   }
   const nextCard = await page.evaluate(() => {
@@ -256,7 +262,7 @@ try {
   if (!nextCard || !nextCard.includes('First Light') || !nextCard.includes('NEXT')) {
     throw new Error(`next level card should be First Light with a NEXT tag, got: ${nextCard}`);
   }
-  console.log('render-check: campaign progress 0/11 cleared, 0/33 stars, NEXT ring on First Light');
+  console.log('render-check: campaign progress 0/12 cleared, 0/36 stars, NEXT ring on First Light');
 
   const webgl = await page.evaluate(() => {
     const c = document.querySelector('#game-container canvas');
@@ -278,9 +284,9 @@ try {
   await page.click('#btn-stats');
   await page.waitForFunction(() => !document.getElementById('stats').classList.contains('hidden'), null, { timeout: 5000 });
   const statsRows = await page.evaluate(() => document.querySelectorAll('#stats-body tr').length);
-  if (statsRows !== 11) throw new Error(`stats table should have 11 rows, got ${statsRows}`);
+  if (statsRows !== 12) throw new Error(`stats table should have 12 rows, got ${statsRows}`);
   const statsTotals = await page.textContent('#stats-totals');
-  if (!statsTotals.includes('Campaign: 0 / 33 stars · 0 / 11 levels cleared')) {
+  if (!statsTotals.includes('Campaign: 0 / 36 stars · 0 / 12 levels cleared')) {
     throw new Error(`stats totals wrong: ${statsTotals}`);
   }
   const statsChallenge = await page.textContent('#stats-challenge');
@@ -291,7 +297,7 @@ try {
   if (!statsFirstRow.includes('First Light') || !statsFirstRow.includes('☆☆☆')) {
     throw new Error(`stats first row wrong: ${statsFirstRow}`);
   }
-  console.log('render-check: My Stats shows 11 rows, 0/33 stars, daily + endless bests');
+  console.log('render-check: My Stats shows 12 rows, 0/36 stars, daily + endless + time attack bests');
   await page.click('#btn-stats-close');
   await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden'), null, { timeout: 5000 });
 
@@ -468,11 +474,11 @@ try {
 
   // Block 3: level 7 "Event Horizon" has a black hole; the bot-verified
   // line (-10 degrees, full power) arcs over it and completes the level.
-  // Seed a save that unlocks all 11 levels, then reload to pick it up.
+  // Seed a save that unlocks all 12 levels, then reload to pick it up.
   await page.evaluate(() => {
     window.localStorage.setItem('nor-stars', JSON.stringify({
       stars: { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3 },
-      unlocked: 11,
+      unlocked: 12,
       seenHowTo: true,
     }));
   });
@@ -615,6 +621,24 @@ try {
   await playLevelToCompletion(page, 'bounce house');
   console.log('render-check: level 11 Bounce House completes');
 
+  // Block 10: level 12 "Moving Stars" has two moving targets whose mesh
+  // positions change over time; the solver's lines collect them and the
+  // level completes.
+  await page.evaluate(() => window.__orbit.selectLevel(12));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const info12 = await page.evaluate(() => window.__orbit.info());
+  if (info12.movingTargets !== 2) {
+    throw new Error(`level 12 should have 2 moving targets, got ${info12.movingTargets}`);
+  }
+  const tPosA = await page.evaluate(() => window.__orbit.info().targetPositions);
+  await page.waitForTimeout(1200);
+  const tPosB = await page.evaluate(() => window.__orbit.info().targetPositions);
+  const tMoved = Math.hypot(tPosB[0][0] - tPosA[0][0], tPosB[0][1] - tPosA[0][1]);
+  if (tMoved < 0.3) throw new Error(`moving target did not move (moved ${tMoved.toFixed(2)} in 1.2s)`);
+  console.log(`render-check: level 12 Moving Stars target drifted ${tMoved.toFixed(2)} units in 1.2s`);
+  await playLevelToCompletion(page, 'moving stars');
+  console.log('render-check: level 12 Moving Stars completes');
+
   // Block 4: a straight shot into Level 4's planet crashes with a
   // large-tier trauma (>= 0.7) and a real hit-stop that then restores.
   await page.evaluate(() => window.__orbit.selectLevel(4));
@@ -623,11 +647,17 @@ try {
     window.__orbit.aim(0, 1.0);
     window.__orbit.launch();
   });
-  await page.waitForFunction(
-    () => window.__orbit.feedbackState().hitStopActive,
+  // Read trauma atomically with the hit-stop check: the crash's 0.12s
+  // freeze decays trauma at 1.4/s, so a second round-trip after the
+  // wait would read a decayed value on a slow headless frame.
+  const crashHandle = await page.waitForFunction(
+    () => {
+      const s = window.__orbit.feedbackState();
+      return s.hitStopActive ? s : null;
+    },
     null, { polling: 20, timeout: 15000 },
   );
-  const crashState = await page.evaluate(() => window.__orbit.feedbackState());
+  const crashState = await crashHandle.jsonValue();
   if (crashState.trauma < 0.7) {
     throw new Error(`crash trauma should be large-tier (>= 0.7), got ${crashState.trauma}`);
   }
@@ -727,6 +757,45 @@ try {
   }
   console.log('render-check: endless round 1 complete, Next Round advances to round 2 (difficulty 2)');
 
+  // Block 10: Time Attack — one 4:00 clock across levels 1-5. Starting it
+  // shows the HUD timer; completing level 1 banks stars and advances to
+  // level 2 with the clock still running.
+  await quitToMenu(page);
+  await page.click('#btn-timeattack');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const taHud = await page.textContent('#hud-level');
+  if (!taHud.includes('Time Attack 1/5')) throw new Error(`time attack HUD wrong: ${taHud}`);
+  const taTimer = await page.evaluate(() => ({
+    visible: !document.getElementById('hud-timer').classList.contains('hidden'),
+    text: document.getElementById('hud-timer').textContent,
+  }));
+  if (!taTimer.visible || !taTimer.text.startsWith('⏱ 4:0')) {
+    throw new Error(`time attack timer wrong: ${JSON.stringify(taTimer)}`);
+  }
+  const taInfo = await page.evaluate(() => window.__orbit.challengeInfo());
+  if (taInfo.mode !== 'timeattack') throw new Error(`challenge mode should be timeattack, got ${taInfo.mode}`);
+  if (!(taInfo.timeLeft > 0 && taInfo.timeLeft <= 240)) {
+    throw new Error(`time attack clock should start at 240s, got ${taInfo.timeLeft}`);
+  }
+  console.log(`render-check: Time Attack started, HUD timer ${taTimer.text.trim()}, clock at ${taInfo.timeLeft.toFixed(1)}s`);
+  await playLevelToCompletion(page, 'time attack level 1');
+  const taNext = await page.textContent('#btn-next');
+  if (taNext.trim() !== 'Next Level →') {
+    throw new Error(`time attack next button should say "Next Level →", got: ${taNext}`);
+  }
+  await page.click('#btn-next');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const taHud2 = await page.textContent('#hud-level');
+  if (!taHud2.includes('Time Attack 2/5')) throw new Error(`time attack level 2 HUD wrong: ${taHud2}`);
+  const taInfo2 = await page.evaluate(() => window.__orbit.challengeInfo());
+  if (taInfo2.timeAttackIndex !== 1 || taInfo2.timeAttackStars < 1) {
+    throw new Error(`after level 1 the run should bank stars, got: ${JSON.stringify(taInfo2)}`);
+  }
+  if (taInfo2.timeLeft >= taInfo.timeLeft) {
+    throw new Error('time attack clock should keep running across levels');
+  }
+  console.log(`render-check: Time Attack level 1 complete (${taInfo2.timeAttackStars} star(s) banked), advanced to 2/5 with ${taInfo2.timeLeft.toFixed(1)}s left`);
+
   // Block 8: touch, keyboard-only play, responsive + camera zoom.
   // Fresh load so the menu is untouched (Play focused, no shots spent).
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded' });
@@ -779,8 +848,8 @@ try {
   }
   await page.keyboard.press('ArrowLeft');
   const wrappedLevel = await page.evaluate(() => document.activeElement && document.activeElement.textContent);
-  if (!wrappedLevel || !wrappedLevel.includes('Bounce House')) {
-    throw new Error(`ArrowLeft should wrap focus to the last level (Bounce House), got: ${wrappedLevel}`);
+  if (!wrappedLevel || !wrappedLevel.includes('Moving Stars')) {
+    throw new Error(`ArrowLeft should wrap focus to the last level (Moving Stars), got: ${wrappedLevel}`);
   }
   console.log('render-check: menu arrow keys move focus between level buttons and wrap');
 
