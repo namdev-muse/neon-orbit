@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.3.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.4.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -9,6 +9,10 @@
 // bot-verified line completes it in 1 shot; level 8 "Carousel" has a
 // moving planet whose mesh position actually changes over time, and a
 // launch there resolves cleanly.
+// Block 4 additions (juice pass 1): a collect fires a shockwave ring and
+// live particles; a planet crash fires a large-tier trauma (>= 0.7) with a
+// real hit-stop that restores; a grazing Level 4 line credits a slingshot
+// near-miss.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -122,11 +126,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.3.0') throw new Error(`expected version 0.3.0, got ${version}`);
+  if (version !== '0.4.0') throw new Error(`expected version 0.4.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.3.0')) throw new Error('menu version v0.3.0 missing');
+  if (!menuText.includes('v0.4.0')) throw new Error('menu version v0.4.0 missing');
   if (!menuText.includes('/ 24')) throw new Error('menu total stars should be / 24 (8 levels)');
-  console.log('render-check: menu renders with v0.3.0');
+  console.log('render-check: menu renders with v0.4.0');
 
   // Block 2: level cards show par and the star thresholds.
   const cardText = await page.textContent('#level-select');
@@ -193,6 +197,18 @@ try {
   await page.mouse.up();
   await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
   console.log('render-check: drag-aim + launch starts flight');
+
+  // Block 4: the collect fires a shockwave ring and live particles while
+  // the comet is still flying (polled fast — the ring only lives 0.7s).
+  await page.waitForFunction(
+    () => window.__orbit.feedbackState().shockwavesActive > 0,
+    null, { polling: 20, timeout: 15000 },
+  );
+  const juice1 = await page.evaluate(() => window.__orbit.feedbackState());
+  if (juice1.particlesAlive < 5) {
+    throw new Error(`collect should leave live particles, got ${juice1.particlesAlive}`);
+  }
+  console.log(`render-check: collect fired a shockwave ring (${juice1.shockwavesActive} active, ${juice1.particlesAlive} particles alive)`);
 
   // Wait for the shot to resolve (collect, crash, or out of bounds).
   await page.waitForFunction(
@@ -266,6 +282,53 @@ try {
     null, { timeout: 15000 },
   );
   console.log('render-check: level 8 launch resolves cleanly');
+
+  // Block 4: a straight shot into Level 4's planet crashes with a
+  // large-tier trauma (>= 0.7) and a real hit-stop that then restores.
+  await page.evaluate(() => window.__orbit.selectLevel(4));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.evaluate(() => {
+    window.__orbit.aim(0, 1.0);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(
+    () => window.__orbit.feedbackState().hitStopActive,
+    null, { polling: 20, timeout: 15000 },
+  );
+  const crashState = await page.evaluate(() => window.__orbit.feedbackState());
+  if (crashState.trauma < 0.7) {
+    throw new Error(`crash trauma should be large-tier (>= 0.7), got ${crashState.trauma}`);
+  }
+  if (crashState.hitStopToken < 1) throw new Error('crash should take a hit-stop token');
+  if (crashState.shockwavesActive < 1) throw new Error('crash should fire a shockwave ring');
+  console.log(`render-check: crash fired large trauma ${crashState.trauma.toFixed(2)} + hit-stop + shockwave`);
+  await page.waitForFunction(
+    () => !window.__orbit.feedbackState().hitStopActive,
+    null, { polling: 20, timeout: 5000 },
+  );
+  console.log('render-check: hit-stop restored after the crash freeze');
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 1,
+    null, { timeout: 15000 },
+  );
+
+  // Block 4: the grazing Level 4 line (-20deg, power 0.3) collects the
+  // target and credits a slingshot near-miss as it skims the planet.
+  await page.evaluate(() => window.__orbit.selectLevel(4));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.evaluate(() => {
+    window.__orbit.aim((-20 * Math.PI) / 180, 0.3);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(
+    () => window.__orbit.feedbackState().slingshotCount >= 1,
+    null, { polling: 20, timeout: 15000 },
+  );
+  console.log('render-check: grazing Level 4 line credited a slingshot near-miss');
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
+    null, { timeout: 15000 },
+  );
 
   if (errors.length > 0) {
     throw new Error('console/page errors:\n' + errors.join('\n'));

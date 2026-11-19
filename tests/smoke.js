@@ -3,7 +3,8 @@ import {
   VERSION, LEVELS, MAX_SPEED, PLAYFIELD_RADIUS, SUBSTEP, levelById, shotBudget,
   starsForShots, starThresholds, isLevelComplete, mulberry32, generateDecor,
   launchState, stepFlight, simulateLaunch, previewShot, planetPosAt,
-  levelHasMovingPlanets, levelBlackHoles,
+  levelHasMovingPlanets, levelBlackHoles, FEEDBACK, FEEDBACK_TIERS,
+  NEAR_MISS_BAND, isNearMiss, COMET_RADIUS,
   defaultSave, serializeSave, parseSave, totalStars,
 } from '../physics.js';
 
@@ -90,7 +91,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.3.0', VERSION === '0.3.0');
+  check('physics version is 0.4.0', VERSION === '0.4.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -248,6 +249,60 @@ check('level not complete with targets left',
   const pB = previewShot(lvl8, 0.2, 0.7, [], 3);
   check('preview follows the launch time for moving planets',
     JSON.stringify(pA.points) !== JSON.stringify(pB.points));
+}
+
+// --- game feel: feedback tiers + near-miss band (Block 4) ---
+{
+  // Every feedback kind sits inside its tier's trauma / hit-stop ranges
+  // from the game-feel skill (small 0.10-0.20 / no stop, medium
+  // 0.30-0.50 / 0.04-0.06s, large 0.70-1.00 / 0.10-0.15s).
+  for (const [kind, f] of Object.entries(FEEDBACK)) {
+    const tier = FEEDBACK_TIERS[f.tier];
+    check(`feedback ${kind} trauma ${f.trauma} is inside its ${f.tier} tier`,
+      f.trauma >= tier.traumaMin && f.trauma <= tier.traumaMax);
+    check(`feedback ${kind} hit-stop ${f.hitStop}s is inside its ${f.tier} tier`,
+      f.hitStop >= tier.stopMin && f.hitStop <= tier.stopMax);
+  }
+  check('crash is the large tier', FEEDBACK.crash.tier === 'large');
+  check('collect and launch are small with no hit-stop',
+    FEEDBACK.collect.tier === 'small' && FEEDBACK.collect.hitStop === 0
+    && FEEDBACK.launch.tier === 'small' && FEEDBACK.launch.hitStop === 0);
+  check('win and swallowed are medium', FEEDBACK.win.tier === 'medium' && FEEDBACK.swallowed.tier === 'medium');
+  check('slingshot is a small event', FEEDBACK.slingshot.tier === 'small' && FEEDBACK.slingshot.hitStop === 0);
+
+  // Near-miss band: just outside the crash radius up to 2 units beyond it.
+  const r = 2.5;
+  check('near-miss band is 2 world units', NEAR_MISS_BAND === 2.0);
+  check('touching the surface is a crash, not a near-miss', !isNearMiss(r + COMET_RADIUS, r));
+  check('just outside the surface is a near-miss', isNearMiss(r + COMET_RADIUS + 0.1, r));
+  check('the far edge of the band is a near-miss', isNearMiss(r + COMET_RADIUS + NEAR_MISS_BAND - 0.01, r));
+  check('beyond the band is not a near-miss', !isNearMiss(r + COMET_RADIUS + NEAR_MISS_BAND + 0.1, r));
+  check('far away is not a near-miss', !isNearMiss(20, r));
+
+  // The flight state carries the per-shot slingshot ledger.
+  const st = launchState(LEVELS[0], 0, 0.5);
+  check('launch state starts with an empty slingshot ledger', Array.isArray(st.slingshotPlanets) && st.slingshotPlanets.length === 0);
+
+  // The verified Level 4 line (-20deg, power 0.3) grazes the planet
+  // inside the band while collecting — the render check's slingshot line.
+  {
+    const lvl = LEVELS[3];
+    const s = launchState(lvl, (-20 * Math.PI) / 180, 0.3);
+    const collected = [];
+    const newly = [];
+    let min = Infinity;
+    let lastEv = null;
+    while (!s.done) {
+      newly.length = 0;
+      const ev = stepFlight(s, lvl, SUBSTEP, collected, newly);
+      const pos = planetPosAt(lvl.planets[0], s.t);
+      min = Math.min(min, Math.hypot(s.x - pos.x, s.y - pos.y));
+      if (ev) { lastEv = ev.type; if (ev.type !== 'collect') break; }
+    }
+    check('level 4 graze line collects the target', collected.length === 1);
+    check('level 4 graze line passes inside the near-miss band', isNearMiss(min, lvl.planets[0].r));
+    check('level 4 graze line does not crash', lastEv !== 'crash');
+  }
 }
 
 // --- save round-trip ---
