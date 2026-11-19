@@ -1,27 +1,34 @@
 // Neon Orbit — bot harness: auto-aim solver plays every level to completion.
 // Grid-searches aim angle/power with simulateLaunch, refines the best aim,
 // and plays each level shot by shot until all targets are collected.
-import { LEVELS, shotBudget, starsForShots, simulateLaunch } from '../physics.js';
+import { LEVELS, shotBudget, starsForShots, simulateLaunch, levelHasMovingPlanets } from '../physics.js';
 
 function solveShot(level, collected) {
   let best = null;
   const score = (res) => {
     let s = res.collected.length * 10000;
     if (res.outcome === 'crash') s -= 5000;
+    if (res.outcome === 'swallowed') s -= 5000;
     if (res.outcome === 'timeout') s -= 2000;
     if (res.outcome === 'lost') s -= 500;
     s -= res.steps * 0.05; // prefer quicker shots on ties
     return s;
   };
-  const consider = (angle, power) => {
-    const res = simulateLaunch(level, angle, power, collected, { record: false });
+  const consider = (angle, power, t0) => {
+    const res = simulateLaunch(level, angle, power, collected, { record: false, t0 });
     const sc = score(res);
-    if (!best || sc > best.score) best = { angle, power, score: sc, res };
+    if (!best || sc > best.score) best = { angle, power, t0, score: sc, res };
   };
+  // Moving planets make the launch time part of the aim: try a spread of
+  // level times (the player waits for the bend to line up). Static levels
+  // only need t0 = 0.
+  const t0s = levelHasMovingPlanets(level) ? [0, 0.75, 1.5, 2.25, 3, 3.75, 4.5, 5.25, 6] : [0];
   // Coarse grid: 2-degree angle steps, 0.1 power steps.
-  for (let deg = 0; deg < 360; deg += 2) {
-    for (let p = 0.15; p <= 1.001; p += 0.1) {
-      consider((deg * Math.PI) / 180, p);
+  for (const t0 of t0s) {
+    for (let deg = 0; deg < 360; deg += 2) {
+      for (let p = 0.15; p <= 1.001; p += 0.1) {
+        consider((deg * Math.PI) / 180, p, t0);
+      }
     }
   }
   // Refine around the best aim: 0.25-degree and 0.02 power steps.
@@ -29,7 +36,7 @@ function solveShot(level, collected) {
     for (let dp = -0.1; dp <= 0.1001; dp += 0.02) {
       const angle = best.angle + (d * Math.PI) / 180;
       const power = Math.max(0.05, Math.min(1, best.power + dp));
-      consider(angle, power);
+      consider(angle, power, best.t0);
     }
   }
   return best;
@@ -46,7 +53,7 @@ for (const level of LEVELS) {
     shots++;
     const gained = best.res.collected;
     for (const i of gained) if (!collected.includes(i)) collected.push(i);
-    log.push(`shot ${shots}: ${(best.angle * 180 / Math.PI).toFixed(1)}deg p=${best.power.toFixed(2)} -> ${best.res.outcome} +${gained.length}`);
+    log.push(`shot ${shots}: ${(best.angle * 180 / Math.PI).toFixed(1)}deg p=${best.power.toFixed(2)} t0=${best.t0.toFixed(2)} -> ${best.res.outcome} +${gained.length}`);
     if (gained.length === 0 && best.res.outcome === 'crash') {
       // A crashing shot that gains nothing is a wasted shot; keep trying.
     }
@@ -63,4 +70,4 @@ if (failures > 0) {
   console.error(`\nbot: FAILED (${failures} level(s))`);
   process.exit(1);
 }
-console.log('\nbot: all 6 levels completed within budget, >= 1 star each');
+console.log(`\nbot: all ${LEVELS.length} levels completed within budget, >= 1 star each`);

@@ -1,10 +1,14 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.2.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.3.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
 // visible while aiming, and the preview predicts the shot outcome.
+// Block 3 additions: level 7 "Event Horizon" has a black hole and the
+// bot-verified line completes it in 1 shot; level 8 "Carousel" has a
+// moving planet whose mesh position actually changes over time, and a
+// launch there resolves cleanly.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -118,10 +122,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.2.0') throw new Error(`expected version 0.2.0, got ${version}`);
+  if (version !== '0.3.0') throw new Error(`expected version 0.3.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.2.0')) throw new Error('menu version v0.2.0 missing');
-  console.log('render-check: menu renders with v0.2.0');
+  if (!menuText.includes('v0.3.0')) throw new Error('menu version v0.3.0 missing');
+  if (!menuText.includes('/ 24')) throw new Error('menu total stars should be / 24 (8 levels)');
+  console.log('render-check: menu renders with v0.3.0');
 
   // Block 2: level cards show par and the star thresholds.
   const cardText = await page.textContent('#level-select');
@@ -203,6 +208,64 @@ try {
   if (after.shotsUsed < 1 && after.phase !== 'complete') {
     throw new Error('launch did not consume a shot');
   }
+
+  // Block 3: level 7 "Event Horizon" has a black hole; the bot-verified
+  // line (-10 degrees, full power) arcs over it and completes the level.
+  // Seed a save that unlocks all 8 levels, then reload to pick it up.
+  await page.evaluate(() => {
+    window.localStorage.setItem('nor-stars', JSON.stringify({
+      stars: { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3 },
+      unlocked: 8,
+      seenHowTo: true,
+    }));
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => window.__orbit, null, { timeout: 30000 });
+  const cardText7 = await page.textContent('#level-select');
+  if (!cardText7.includes('Event Horizon')) throw new Error('level 7 card missing');
+  if (!cardText7.includes('Carousel')) throw new Error('level 8 card missing');
+  await page.evaluate(() => window.__orbit.selectLevel(7));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const info7 = await page.evaluate(() => window.__orbit.info());
+  if (info7.blackHoles !== 1) throw new Error(`level 7 should have 1 black hole, got ${info7.blackHoles}`);
+  await page.evaluate(() => {
+    window.__orbit.aim((-10 * Math.PI) / 180, 1.0);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
+    null, { timeout: 15000 },
+  );
+  const after7 = await page.evaluate(() => ({
+    phase: window.__orbit.state.phase,
+    shotsUsed: window.__orbit.state.shotsUsed,
+  }));
+  if (after7.phase !== 'complete') {
+    throw new Error(`bot line on level 7 should complete it, got phase=${after7.phase} shotsUsed=${after7.shotsUsed}`);
+  }
+  console.log('render-check: level 7 Event Horizon (1 black hole) completes on the bot line in 1 shot');
+
+  // Block 3: level 8 "Carousel" has a moving planet whose mesh position
+  // changes over time, and a launch there resolves cleanly.
+  await page.evaluate(() => window.__orbit.selectLevel(8));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const info8 = await page.evaluate(() => window.__orbit.info());
+  if (info8.movingPlanets !== 1) throw new Error(`level 8 should have 1 moving planet, got ${info8.movingPlanets}`);
+  const posA = await page.evaluate(() => window.__orbit.info().planetPositions[0]);
+  await page.waitForTimeout(1200);
+  const posB = await page.evaluate(() => window.__orbit.info().planetPositions[0]);
+  const moved = Math.hypot(posB[0] - posA[0], posB[1] - posA[1]);
+  if (moved < 0.5) throw new Error(`moving planet did not move (moved ${moved.toFixed(2)} in 1.2s)`);
+  console.log(`render-check: level 8 Carousel moving planet moved ${moved.toFixed(2)} units in 1.2s`);
+  await page.evaluate(() => {
+    window.__orbit.aim((13 * Math.PI) / 180, 1.0);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
+    null, { timeout: 15000 },
+  );
+  console.log('render-check: level 8 launch resolves cleanly');
 
   if (errors.length > 0) {
     throw new Error('console/page errors:\n' + errors.join('\n'));

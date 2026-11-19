@@ -2,7 +2,8 @@
 import {
   VERSION, LEVELS, MAX_SPEED, PLAYFIELD_RADIUS, SUBSTEP, levelById, shotBudget,
   starsForShots, starThresholds, isLevelComplete, mulberry32, generateDecor,
-  launchState, stepFlight, simulateLaunch, previewShot,
+  launchState, stepFlight, simulateLaunch, previewShot, planetPosAt,
+  levelHasMovingPlanets, levelBlackHoles,
   defaultSave, serializeSave, parseSave, totalStars,
 } from '../physics.js';
 
@@ -15,8 +16,8 @@ function check(name, cond) {
 function approx(a, b, eps = 1e-9) { return Math.abs(a - b) <= eps; }
 
 // --- level definitions ---
-check('6 levels defined', LEVELS.length === 6);
-check('level ids are 1..6 in order', LEVELS.every((l, i) => l.id === i + 1));
+check('8 levels defined', LEVELS.length === 8);
+check('level ids are 1..8 in order', LEVELS.every((l, i) => l.id === i + 1));
 check('every level has a name', LEVELS.every((l) => typeof l.name === 'string' && l.name.length > 0));
 check('every level has a hint', LEVELS.every((l) => typeof l.hint === 'string' && l.hint.length > 0));
 check('every level has a pad inside the playfield',
@@ -39,8 +40,29 @@ check('no planet overlaps the pad',
     const dx = p.x - l.pad.x, dy = p.y - l.pad.y;
     return dx * dx + dy * dy > (p.r + 2) * (p.r + 2);
   })));
-check('pars are 2,3,3,3,4,5',
-  LEVELS.map((l) => l.par).join(',') === '2,3,3,3,4,5');
+check('every black hole has positive radius and gravity',
+  LEVELS.every((l) => levelBlackHoles(l).every((b) => b.r > 0 && b.mu > 0)));
+check('every black hole is inside the playfield',
+  LEVELS.every((l) => levelBlackHoles(l).every((b) => b.x * b.x + b.y * b.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS)));
+check('no target overlaps a black hole',
+  LEVELS.every((l) => l.targets.every((t) => levelBlackHoles(l).every((b) => {
+    const dx = t.x - b.x, dy = t.y - b.y;
+    return dx * dx + dy * dy > (b.r + t.r + 1) * (b.r + t.r + 1);
+  }))));
+check('moving planets never sweep over a target or the pad',
+  LEVELS.every((l) => l.planets.every((p) => {
+    if (!p.orbit) return true;
+    const clear = (x, y, extra) => {
+      const d = Math.hypot(x - p.orbit.cx, y - p.orbit.cy);
+      return Math.abs(d - p.orbit.radius) > p.r + extra + 0.5;
+    };
+    return l.targets.every((t) => clear(t.x, t.y, t.r))
+      && clear(l.pad.x, l.pad.y, 1.5);
+  })));
+check('level 7 has a black hole', levelBlackHoles(LEVELS[6]).length === 1);
+check('level 8 has a moving planet', levelHasMovingPlanets(LEVELS[7]));
+check('levels 1-6 have no black holes or moving planets',
+  LEVELS.slice(0, 6).every((l) => levelBlackHoles(l).length === 0 && !levelHasMovingPlanets(l)));
 check('levelById finds level 4', levelById(4) && levelById(4).name === 'The Long Way');
 check('levelById returns null for unknown id', levelById(99) === null);
 check('shot budget is par + 2', LEVELS.every((l) => shotBudget(l) === l.par + 2));
@@ -68,7 +90,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.2.0', VERSION === '0.2.0');
+  check('physics version is 0.3.0', VERSION === '0.3.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -176,6 +198,58 @@ check('level not complete with targets left',
   check('simulation time stays within the cap', r1.time <= 10.001);
 }
 
+// --- black holes + moving planets ---
+{
+  // planetPosAt: static planets stay put, orbiting planets travel the circle.
+  const still = { x: 3, y: 4, r: 2, mu: 100 };
+  check('static planet position does not depend on time',
+    planetPosAt(still, 0).x === 3 && planetPosAt(still, 9.5).y === 4);
+  const mover = { x: 7, y: 0, r: 2, mu: 150, orbit: { cx: 0, cy: 0, radius: 7, speed: 0.45, phase: 0 } };
+  const p0 = planetPosAt(mover, 0);
+  const p1 = planetPosAt(mover, 1);
+  check('orbiting planet starts at its phase position', approx(p0.x, 7) && approx(p0.y, 0));
+  check('orbiting planet moves with time', Math.hypot(p1.x - p0.x, p1.y - p0.y) > 0.5);
+  check('orbiting planet stays on its orbit circle',
+    approx(Math.hypot(p1.x, p1.y), 7, 1e-6));
+  check('orbiting planet position is deterministic for the same t',
+    JSON.stringify(planetPosAt(mover, 3.7)) === JSON.stringify(planetPosAt(mover, 3.7)));
+  check('orbiting planet returns after one full period',
+    Math.hypot(planetPosAt(mover, 2 * Math.PI / 0.45).x - 7, planetPosAt(mover, 2 * Math.PI / 0.45).y) < 1e-6);
+
+  // Black hole gravity bends the flight toward the hole, harder than a planet.
+  const hole = { pad: { x: -10, y: 3 }, planets: [], blackHoles: [{ x: 0, y: 0, r: 1.6, mu: 300 }], targets: [] };
+  const s = launchState(hole, 0, 0.6);
+  const col = [];
+  for (let i = 0; i < 120; i++) stepFlight(s, hole, SUBSTEP, [], col);
+  check('black hole gravity pulls the comet toward the hole (y decreases toward 0)',
+    s.y < 3 && s.y > -1);
+  // A straight shot into the hole is swallowed, not a planet crash.
+  const into = { pad: { x: -10, y: 0 }, planets: [], blackHoles: [{ x: 0, y: 0, r: 1.6, mu: 10 }], targets: [] };
+  const swallowed = simulateLaunch(into, 0, 0.5);
+  check('flying straight into a black hole is swallowed', swallowed.outcome === 'swallowed');
+  check('swallowed shot ends near the event horizon',
+    Math.hypot(swallowed.end.x, swallowed.end.y) < 2.6);
+  const over = simulateLaunch(into, 0.6, 0.5);
+  check('a shot that clears the black hole is not swallowed', over.outcome !== 'swallowed');
+  const holePrev = previewShot(into, 0, 0.5);
+  check('preview of a head-on shot at a black hole predicts swallowed',
+    holePrev.outcome === 'swallowed');
+
+  // Moving planets make the same launch time-dependent.
+  const lvl8 = LEVELS[7];
+  const a = simulateLaunch(lvl8, 0.2, 0.7, [], { record: true, t0: 0 });
+  const b = simulateLaunch(lvl8, 0.2, 0.7, [], { record: true, t0: 3 });
+  check('same launch at a different level time flies a different path',
+    JSON.stringify(a.points) !== JSON.stringify(b.points));
+  const a2 = simulateLaunch(lvl8, 0.2, 0.7, [], { record: true, t0: 0 });
+  check('same launch at the same level time is deterministic',
+    JSON.stringify(a.points) === JSON.stringify(a2.points));
+  const pA = previewShot(lvl8, 0.2, 0.7, [], 0);
+  const pB = previewShot(lvl8, 0.2, 0.7, [], 3);
+  check('preview follows the launch time for moving planets',
+    JSON.stringify(pA.points) !== JSON.stringify(pB.points));
+}
+
 // --- save round-trip ---
 {
   const save = defaultSave();
@@ -188,7 +262,7 @@ check('level not complete with targets left',
   check('save round-trips unlocked level', back.unlocked === 3);
   check('total stars sums correctly', totalStars(back) === 5);
   check('garbage save text falls back to defaults', parseSave('not json').unlocked === 1);
-  check('save clamps unlocked into range', parseSave('{"unlocked":99}').unlocked === 6);
+  check('save clamps unlocked into range', parseSave('{"unlocked":99}').unlocked === 8);
   check('save drops stars for unknown levels',
     Object.keys(parseSave('{"stars":{"9":3}}').stars).length === 0);
   check('save drops out-of-range star counts',
