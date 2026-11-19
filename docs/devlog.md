@@ -165,3 +165,89 @@ Web Audio synth SFX + music loop + mute, deepened (backlog #33, #34, #35).
   menu slider, three burnt shots on level 1 fire the last-shot warning
   with tense intensity 1, and level 3 starts at mid intensity 1 — all
   with zero console errors.
+
+## Block 6 — 2026-11-20 03:30 Asia/Bangkok (v0.6.0)
+
+Daily-seed levels / challenge mode (backlog #18, #19, #22) — one seeded
+generator + one solver shared by all three modes.
+
+- **Seeded generator (#18, #22):** `generateLevel(seed, difficulty, id)`
+  in `physics.js` builds a deterministic layout from a mulberry32 seed:
+  pad on the left, 1–3 targets on the right, 1–3 planets placed on the
+  pad → target corridor with a perpendicular offset, an optional black
+  hole at difficulty 3+ and an optional moving planet at 2+ (its orbit
+  circle is checked clear of the pad and targets). Every candidate is
+  verified solvable by the shared coarse solver before it is offered
+  (up to 8 derived-seed retries, then a known-good Level 1-style
+  fallback), and par comes from the solver's shot count, clamped 2–5.
+  Generated levels register under ids 900–902 so `levelById` /
+  `shotBudget` / `starsForShots` work on them like campaign levels, and
+  they never touch the campaign unlock chain.
+- **Daily Orbit (#18):** the seed is the calendar date (YYYYMMDD), so
+  everyone plays the same level; difficulty rotates 2–4 by day of year.
+  The menu button shows today's date plus the best stars earned on it;
+  the best is stored in the save (`daily: {date, stars}`).
+- **Shareable seed links (#22):** `?seed=` accepts a number (`777`) or
+  any word (`orbit42`, FNV-1a hashed) and auto-starts that exact level
+  (after the first-visit how-to, so a shared link works for new players
+  too); the menu seed box is prefilled from the link. Per-seed bests
+  persist in the save (`seedBest`, capped at 100 entries). Retry replays
+  the same seed, never a different puzzle.
+- **Endless Orbit (#19):** a fresh run seed per attempt, one difficulty
+  step per round (round n = difficulty n). Completing a round turns the
+  Next button into "Next Round →"; failing shows how many rounds were
+  cleared. Retry replays the same round.
+- **Solver shared with the bot (#45, partial):** the bot harness's grid
+  search moved into `physics.js` as `solveShot` / `solveLevel` (fine
+  grid for the bot, coarse grid + launch-time sampling for generation
+  checks). The bot now also plays today's daily level, seed `orbit42`
+  and endless round 3 — all complete with 3 stars.
+- **Render-check hook:** `window.__orbit.solveShot()` returns the best
+  collecting line with its launch time (searching up to 3s ahead), so
+  the check can wait for the level clock to reach a moving planet's
+  window and launch. The browser context now runs in Asia/Bangkok —
+  the headless shell's UTC clock showed yesterday's daily and the first
+  run failed the date assertion. The global keydown handler now ignores
+  keystrokes typed in the seed input, so typing "orbit" no longer mutes
+  or restarts the game.
+- Tests: smoke grew 111 → 259 checks (seed helpers, solver basics,
+  generator determinism / geometry / solvability across 12 seed ×
+  difficulty combos, daily + seed-best save round-trips). Bot plays 11
+  levels (8 campaign + 3 generated), all 3 stars. The render check now
+  asserts the daily button date, plays the daily level to completion
+  (3 stars, best recorded, menu button shows ★★★), loads `?seed=777`
+  and completes it (seed best recorded), and completes endless round 1
+  then advances to round 2 at difficulty 2 — all with zero console
+  errors.
+
+## Block 7 — 2026-11-20 04:30 Asia/Bangkok (v0.7.0)
+
+UI pass — campaign map, best-stars table, failed-screen stats — backlog
+items #23, #43, #38 (features_done 14 → 17/60).
+
+- **Campaign map (#23):** the level select is now a campaign map — a
+  progress bar above the grid shows levels cleared (x/8) and stars
+  earned (x/24) with a cyan-to-gold fill, and the next uncompleted
+  unlocked level gets a gold "NEXT" ring so the player always sees where
+  the run continues. The existing cards already showed par + star
+  thresholds per level; the map adds the run-level picture.
+- **Best-stars table (#43):** a new "My Stats" button opens an overlay
+  with one row per campaign level (name, best stars, par), a totals line
+  (stars x/24, levels cleared x/8), and the challenge bests — today's
+  daily best, the endless run record, and how many shared seeds have a
+  recorded best. Locked levels show "Locked" instead of stars.
+- **Level-failed screen (#38):** the "Out of Shots" screen now shows the
+  attempt stats — shots used vs budget, par, and the best already banked
+  on that level (campaign) or in that mode (daily / seed / endless) —
+  and gains a third button, "Level Select", which returns to the menu and
+  scrolls the campaign map into view. Retry and Main Menu are unchanged.
+- **Endless record:** the save gains `endlessBest` (most rounds cleared
+  in one run), recorded both when a round is cleared and when a run ends,
+  round-tripped and validated like the other bests (0–99, defaults to 0
+  for old saves).
+- Tests: smoke grew to 263 checks (endless-best round-trip + validation).
+  The render check now asserts the campaign progress bar and NEXT ring on
+  the fresh menu, opens My Stats (8 rows, 0/24 totals, challenge bests)
+  and closes it, burns level 1's last shot to reach the failed screen
+  (stats "Shots used: 4 / 4 · Par 2 · Best on this level: ★★★") and
+  returns via Level Select — all with zero console errors.
