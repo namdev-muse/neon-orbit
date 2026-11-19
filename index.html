@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Neon Orbit — 3D Gravity Slingshot Puzzle</title>
+<meta name="description" content="Neon Orbit: a 3D gravity-slingshot puzzle. Drag, aim, and launch your comet around planets to collect every star target.">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="game-container"></div>
+
+<!-- HUD -->
+<div id="hud" class="hidden">
+  <div class="hud-left">
+    <span id="hud-level">Level 1 — First Light</span>
+    <span id="hud-stars" class="hud-stars"></span>
+  </div>
+  <div class="hud-mid">
+    <span id="hud-shots">Shots 0/2</span>
+    <span id="hud-targets">Targets 1 left</span>
+  </div>
+  <div class="hud-right">
+    <button id="btn-mute-hud" class="icon-btn" type="button" aria-label="Toggle sound">Sound: On</button>
+    <button id="btn-pause" class="icon-btn" type="button" aria-label="Pause game">Pause</button>
+  </div>
+</div>
+<div id="aim-readout" class="hidden">Drag back from the comet to aim — release to launch</div>
+
+<!-- Main menu -->
+<div id="menu" class="overlay">
+  <div class="panel">
+    <h1>NEON ORBIT</h1>
+    <p class="tagline">Slingshot your comet around planets. Collect every star.</p>
+    <p class="version">v0.1.0 &middot; Three.js 0.160.0</p>
+    <button id="btn-play" class="btn primary" type="button">Play</button>
+    <button id="btn-howto" class="btn" type="button">How to Play</button>
+    <div id="level-select" class="level-select" aria-label="Level select"></div>
+    <p class="total-stars">Total stars: <span id="total-stars">0</span> / 18</p>
+    <button id="btn-mute-menu" class="btn small" type="button">Sound: On</button>
+  </div>
+</div>
+
+<!-- How to play -->
+<div id="howto" class="overlay hidden">
+  <div class="panel">
+    <h2>How to Play</h2>
+    <ul class="howto-list">
+      <li><strong>Drag</strong> back from the comet and <strong>release</strong> to launch it — like a slingshot.</li>
+      <li>Planets <strong>bend</strong> your flight with gravity. Use the bend, don't fight it.</li>
+      <li>Collect <strong>every magenta target</strong> before you run out of shots.</li>
+      <li>Crashing into a planet or flying out of bounds <strong>loses the shot</strong>.</li>
+      <li>Beat par for <strong>3 stars</strong>. Finish a level to unlock the next one.</li>
+    </ul>
+    <h3>Controls</h3>
+    <ul class="howto-list">
+      <li>Mouse / touch: drag to aim, release to launch</li>
+      <li>Arrow keys: adjust angle and power &middot; Space: launch</li>
+      <li>R: retry level &middot; P: pause &middot; M: mute</li>
+    </ul>
+    <button id="btn-howto-close" class="btn primary" type="button">Got it</button>
+  </div>
+</div>
+
+<!-- Level complete -->
+<div id="complete" class="overlay hidden">
+  <div class="panel">
+    <h2>Level Complete</h2>
+    <p id="complete-stars" class="big-stars">★★★</p>
+    <p id="complete-shots">Finished in 2 shots (par 2)</p>
+    <button id="btn-next" class="btn primary" type="button">Next Level</button>
+    <button id="btn-replay" class="btn" type="button">Replay Level</button>
+    <button id="btn-menu-complete" class="btn" type="button">Main Menu</button>
+  </div>
+</div>
+
+<!-- Level failed -->
+<div id="failed" class="overlay hidden">
+  <div class="panel">
+    <h2>Out of Shots</h2>
+    <p id="failed-text">The comet drifted away. Try a different arc.</p>
+    <button id="btn-retry" class="btn primary" type="button">Retry Level</button>
+    <button id="btn-menu-failed" class="btn" type="button">Main Menu</button>
+  </div>
+</div>
+
+<!-- Pause -->
+<div id="pause" class="overlay hidden">
+  <div class="panel">
+    <h2>Paused</h2>
+    <button id="btn-resume" class="btn primary" type="button">Resume</button>
+    <button id="btn-restart" class="btn" type="button">Restart Level</button>
+    <button id="btn-quit" class="btn" type="button">Quit to Menu</button>
+    <label class="slider-row">Screen shake
+      <input id="shake-range" type="range" min="0" max="100" value="100" aria-label="Screen shake strength">
+      <span id="shake-value">100%</span>
+    </label>
+    <button id="btn-mute-pause" class="btn small" type="button">Sound: On</button>
+  </div>
+</div>
+
+<script type="module" src="game.js"></script>
+</body>
+</html>
