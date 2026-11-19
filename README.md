@@ -6,7 +6,7 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.4.0
+**Version:** v0.5.0
 
 ## How to play
 
@@ -66,12 +66,20 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 - One antialiased renderer (pixel ratio capped at 2), one PerspectiveCamera
   on a separate rig so screen shake never moves colliders.
 - Pooled particles, trauma-based screen shake with hit-stop, Web Audio synth
-  SFX and a simple music loop. Every feedback event is pinned to a tier
+  SFX and layered music. Every feedback event is pinned to a tier
   in `physics.js` (`FEEDBACK`): small events 0.10–0.20 trauma with no
   stop, medium 0.30–0.50 with a 0.04–0.06s stop, large 0.70–1.00 with a
   0.10–0.15s stop — and only the newest hit-stop owns the restore, so
   overlapping hits never end a freeze early. Shockwave rings are pooled
   (8 slots, reused round-robin) and expand with an ease-out before fading.
+- The SFX set covers every event: launch whoosh, collect chime, crash
+  thud, slingshot sweep, win arpeggio, fail jingle, unlock chime, and a
+  two-tone warning when the next shot is the last one. The music loop
+  layers up with intensity — calm bass on levels 1–2, an arpeggio from
+  level 3, and a driving tension pulse on the last shot — and the root
+  progression rotates per level. SFX and music run on separate buses
+  under one master gain; the volume slider (menu + pause menu) and the
+  mute toggle persist in `nor-settings`.
 - Best stars per level and settings persist in localStorage (`nor-stars`,
   `nor-settings`).
 

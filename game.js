@@ -10,7 +10,7 @@ import {
   defaultSave, serializeSave, parseSave, totalStars,
 } from './physics.js';
 
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -56,6 +56,7 @@ function loadSettings() {
     const raw = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || '{}');
     return {
       muted: !!raw.muted,
+      volume: typeof raw.volume === 'number' ? Math.max(0, Math.min(1, raw.volume)) : 0.6,
       shake: typeof raw.shake === 'number' ? Math.max(0, Math.min(1, raw.shake)) : 1,
     };
   } catch {
@@ -71,12 +72,21 @@ let settings = loadSettings();
 state.unlocked = save.unlocked;
 
 // ---------------------------------------------------------------- audio
+// Two buses under one master gain: SFX (short, punchy) and music (quiet,
+// layered). Volume scales the master; mute silences it but remembers the
+// volume. Every SFX name is recorded in lastSfx so the bot harness and
+// render check can assert which sound fired, without capturing audio.
 let audioCtx = null;
 let masterGain = null;
+let sfxGain = null;
+let musicGain = null;
 let musicTimer = null;
 let musicStep = 0;
 let nextNoteTime = 0;
+let lastSfx = null;
+let lastSfxAt = 0;
 const MUSIC_ROOTS = [55, 43.65, 65.41, 49]; // A1 F1 C2 G1
+const ARP_STEPS = [2, 3, 4, 3]; // chord-tone multipliers for the arp layer
 
 function ensureAudio() {
   if (!audioCtx) {
@@ -84,14 +94,31 @@ function ensureAudio() {
     if (!AC) return;
     audioCtx = new AC();
     masterGain = audioCtx.createGain();
-    masterGain.gain.value = settings.muted ? 0 : 0.6;
+    masterGain.gain.value = settings.muted ? 0 : settings.volume;
     masterGain.connect(audioCtx.destination);
+    sfxGain = audioCtx.createGain();
+    sfxGain.gain.value = 1.0;
+    sfxGain.connect(masterGain);
+    musicGain = audioCtx.createGain();
+    musicGain.gain.value = 0.7;
+    musicGain.connect(masterGain);
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
 }
 
-function toneAt(freq, at, dur, type, vol, slideTo) {
-  if (!audioCtx || !masterGain) return;
+function applyVolume() {
+  if (masterGain) masterGain.gain.value = settings.muted ? 0 : settings.volume;
+}
+
+function setVolume(v) {
+  settings.volume = Math.max(0, Math.min(1, v));
+  persistSettings();
+  applyVolume();
+  updateVolumeLabels();
+}
+
+function toneAt(freq, at, dur, type, vol, slideTo, bus) {
+  if (!audioCtx || !bus) return;
   const o = audioCtx.createOscillator();
   const g = audioCtx.createGain();
   o.type = type;
@@ -101,18 +128,18 @@ function toneAt(freq, at, dur, type, vol, slideTo) {
   g.gain.exponentialRampToValueAtTime(vol, at + 0.01);
   g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
   o.connect(g);
-  g.connect(masterGain);
+  g.connect(bus);
   o.start(at);
   o.stop(at + dur + 0.05);
 }
 
 function tone(freq, dur, type, vol, slideTo, delay) {
   if (!audioCtx) return;
-  toneAt(freq, audioCtx.currentTime + (delay || 0), dur, type, vol, slideTo || null);
+  toneAt(freq, audioCtx.currentTime + (delay || 0), dur, type, vol, slideTo || null, sfxGain);
 }
 
 function noiseBurst(dur, vol, cutoff) {
-  if (!audioCtx || !masterGain) return;
+  if (!audioCtx || !sfxGain) return;
   const len = Math.max(1, Math.floor(audioCtx.sampleRate * dur));
   const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
   const d = buf.getChannelData(0);
@@ -126,44 +153,93 @@ function noiseBurst(dur, vol, cutoff) {
   g.gain.value = vol;
   src.connect(f);
   f.connect(g);
-  g.connect(masterGain);
+  g.connect(sfxGain);
   src.start();
 }
 
+function recordSfx(name) {
+  lastSfx = name;
+  lastSfxAt = Date.now();
+}
+
 const sfx = {
-  click() { tone(660, 0.06, 'square', 0.05); },
+  click() { recordSfx('click'); tone(660, 0.06, 'square', 0.05); },
   launch() {
+    recordSfx('launch');
     tone(180, 0.3, 'sawtooth', 0.1, 720);
     noiseBurst(0.25, 0.07, 1200);
   },
   collect() {
+    recordSfx('collect');
     tone(880, 0.12, 'sine', 0.16);
     tone(1318, 0.18, 'sine', 0.16, null, 0.07);
   },
   crash() {
+    recordSfx('crash');
     tone(90, 0.35, 'sine', 0.28, 40);
     noiseBurst(0.3, 0.22, 500);
   },
-  lost() { tone(320, 0.4, 'sine', 0.1, 140); },
+  lost() { recordSfx('lost'); tone(320, 0.4, 'sine', 0.1, 140); },
   swallow() {
+    recordSfx('swallow');
     tone(320, 0.5, 'sine', 0.2, 40);
     noiseBurst(0.3, 0.1, 400);
   },
   slingshot() {
+    recordSfx('slingshot');
     tone(240, 0.35, 'sine', 0.12, 960);
     tone(480, 0.2, 'triangle', 0.06, 1440, 0.05);
   },
   win() {
+    recordSfx('win');
     [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.22, 'sine', 0.15, null, i * 0.09));
+  },
+  // Descending minor jingle when a level is failed (out of shots).
+  fail() {
+    recordSfx('fail');
+    [392, 330, 262, 196].forEach((f, i) => tone(f, 0.25, 'triangle', 0.14, null, i * 0.12));
+  },
+  // Rising chime when a level completion unlocks the next level.
+  unlock() {
+    recordSfx('unlock');
+    [784, 988, 1175, 1568].forEach((f, i) => tone(f, 0.2, 'sine', 0.13, null, i * 0.08));
+  },
+  // Two-tone warning when the next shot is the last one.
+  lastShot() {
+    recordSfx('lastShot');
+    tone(1046, 0.09, 'square', 0.07);
+    tone(784, 0.14, 'square', 0.07, null, 0.12);
   },
 };
 
+// Music intensity: 0 = calm (bass layer only), 1 = mid (bass + arpeggio,
+// levels 3+), 2 = tense (adds a driving pulse on the last shot). The root
+// progression rotates by level so later levels sound different.
+function musicIntensity() {
+  let intensity = state.levelId >= 3 ? 1 : 0;
+  if ((state.phase === 'aim' || state.phase === 'fly') && state.shotsLeft <= 1) intensity += 1;
+  return Math.min(2, intensity);
+}
+
 function scheduleMusicStep(step, at) {
   const bar = Math.floor(step / 8) % MUSIC_ROOTS.length;
-  const root = MUSIC_ROOTS[bar];
-  if (step % 2 === 0) toneAt(root, at, 0.5, 'triangle', 0.045);
-  if (step % 8 === 4) toneAt(root * 2, at, 0.4, 'sine', 0.035);
-  if (step % 16 === 14) toneAt(880, at, 0.3, 'sine', 0.022);
+  const root = MUSIC_ROOTS[(state.levelId - 1 + bar) % MUSIC_ROOTS.length];
+  const intensity = musicIntensity();
+  // Layer 1 — bass, always on.
+  if (step % 2 === 0) toneAt(root, at, 0.5, 'triangle', 0.045, null, musicGain);
+  if (step % 8 === 4) toneAt(root * 2, at, 0.4, 'sine', 0.035, null, musicGain);
+  if (step % 16 === 14) toneAt(880, at, 0.3, 'sine', 0.022, null, musicGain);
+  // Layer 2 — arpeggio, levels 3+ (intensity >= 1): chord tones on the
+  // off-beats, cycling root*2 / *3 / *4 / *3.
+  if (intensity >= 1 && step % 2 === 1) {
+    const mult = ARP_STEPS[Math.floor(step / 2) % ARP_STEPS.length];
+    toneAt(root * mult, at, 0.22, 'sine', 0.02, null, musicGain);
+  }
+  // Layer 3 — tension pulse, last shot only (intensity 2): a short, fast
+  // tick on every step that pushes the tempo of the moment.
+  if (intensity >= 2) {
+    toneAt(root * 4, at, 0.08, 'triangle', 0.02, null, musicGain);
+  }
 }
 
 function startMusic() {
@@ -183,7 +259,7 @@ function startMusic() {
 function toggleMute() {
   settings.muted = !settings.muted;
   persistSettings();
-  if (masterGain) masterGain.gain.value = settings.muted ? 0 : 0.6;
+  applyVolume();
   updateMuteLabels();
 }
 
@@ -192,6 +268,15 @@ function updateMuteLabels() {
   for (const id of ['btn-mute-menu', 'btn-mute-hud', 'btn-mute-pause']) {
     const el = document.getElementById(id);
     if (el) el.textContent = label;
+  }
+}
+
+function updateVolumeLabels() {
+  for (const suffix of ['menu', 'pause']) {
+    const range = document.getElementById(`volume-range-${suffix}`);
+    const value = document.getElementById(`volume-value-${suffix}`);
+    if (range) range.value = String(Math.round(settings.volume * 100));
+    if (value) value.textContent = `${Math.round(settings.volume * 100)}%`;
   }
 }
 
@@ -850,6 +935,8 @@ function endShot() {
   resetCometToPad();
   setAim(defaultAimAngle(level, state.collected), 0.6);
   updateHUD();
+  // Down to the last shot: a two-tone warning so the player knows it.
+  if (state.shotsLeft === 1) sfx.lastShot();
 }
 
 function completeLevel() {
@@ -859,14 +946,18 @@ function completeLevel() {
   if (!save.stars[state.levelId] || save.stars[state.levelId] < stars) {
     save.stars[state.levelId] = stars;
   }
+  let unlockedNew = false;
   if (state.levelId < LEVELS.length && save.unlocked <= state.levelId) {
     save.unlocked = state.levelId + 1;
+    unlockedNew = true;
   }
   state.unlocked = save.unlocked;
   persistSave();
   state.phase = 'complete';
   state.targetsRemaining = 0;
   feedback('win', 0, 0);
+  // A fresh unlock rings a rising chime just after the win arpeggio.
+  if (unlockedNew) window.setTimeout(() => sfx.unlock(), 450);
   for (const t of level.targets) {
     spawnBurst(t.x, t.y, 0, 0xffd166, 30, 8, 1.0);
     spawnShockwave(t.x, t.y, 0xffd166, 7, 0.9);
@@ -883,6 +974,7 @@ function completeLevel() {
 function failLevel() {
   const level = levelById(state.levelId);
   state.phase = 'failed';
+  sfx.fail();
   $('failed-text').textContent =
     `${level.name}: out of shots with ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left. Try a different arc.`;
   updateHUD();
@@ -1129,6 +1221,16 @@ function wireButtons() {
   $('btn-mute-menu').addEventListener('click', () => { ensureAudio(); toggleMute(); });
   $('btn-mute-hud').addEventListener('click', () => { ensureAudio(); toggleMute(); });
   $('btn-mute-pause').addEventListener('click', () => { ensureAudio(); toggleMute(); });
+  // Volume sliders (menu + pause) share one persisted setting; moving
+  // either updates the master gain live and syncs the other slider.
+  for (const suffix of ['menu', 'pause']) {
+    const range = $(`volume-range-${suffix}`);
+    range.addEventListener('input', () => {
+      ensureAudio();
+      setVolume(Number(range.value) / 100);
+    });
+  }
+  updateVolumeLabels();
   const shakeRange = $('shake-range');
   shakeRange.value = String(Math.round(settings.shake * 100));
   $('shake-value').textContent = `${Math.round(settings.shake * 100)}%`;
@@ -1265,8 +1367,18 @@ window.__orbit = {
       planetPositions: planetMeshes.map((m) => [m.position.x, m.position.y]),
     };
   },
-  // Live game-feel state for the render check: trauma, hit-stop, active
-  // shockwave rings, live particles, slingshots credited on this shot.
+  // Live audio state for the render check: mute/volume, whether the
+  // music scheduler is running, the current intensity layer (0/1/2), and
+  // the most recently played SFX name.
+  audioState: () => ({
+    audioReady: !!audioCtx,
+    muted: settings.muted,
+    volume: settings.volume,
+    musicPlaying: !!musicTimer && !!audioCtx,
+    intensity: musicIntensity(),
+    lastSfx,
+    lastSfxAt,
+  }),
   feedbackState: () => ({
     trauma,
     hitStopActive: performance.now() < hitStopUntil,
@@ -1289,6 +1401,7 @@ document.querySelector('.version').textContent = `v${VERSION} · Three.js ${THRE
 fitCamera();
 wireButtons();
 updateMuteLabels();
+updateVolumeLabels();
 renderLevelSelect();
 if (!save.seenHowTo) {
   state.phase = 'howto';

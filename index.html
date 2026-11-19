@@ -45,9 +45,13 @@
   <div class="panel">
     <h1>NEON ORBIT</h1>
     <p class="tagline">Slingshot your comet around planets. Collect every star.</p>
-    <p class="version">v0.4.0 &middot; Three.js 0.160.0</p>
+    <p class="version">v0.5.0 &middot; Three.js 0.160.0</p>
     <button id="btn-play" class="btn primary" type="button">Play</button>
     <button id="btn-howto" class="btn" type="button">How to Play</button>
+    <label class="slider-row">Volume
+      <input id="volume-range-menu" type="range" min="0" max="100" value="60" aria-label="Volume">
+      <span id="volume-value-menu">60%</span>
+    </label>
     <div id="level-select" class="level-select" aria-label="Level select"></div>
     <p class="total-stars">Total stars: <span id="total-stars">0</span> / 24</p>
     <button id="btn-mute-menu" class="btn small" type="button">Sound: On</button>
@@ -73,7 +77,7 @@
       <li>Mouse / touch: drag to aim, release to launch</li>
       <li>Hold <strong>Shift</strong> while aiming for fine adjustments (or Shift + arrow keys)</li>
       <li>Arrow keys: adjust angle and power &middot; Space: launch</li>
-      <li>R: retry level &middot; P: pause &middot; M: mute</li>
+      <li>R: retry level &middot; P: pause &middot; M: mute &middot; volume slider in the pause menu</li>
     </ul>
     <button id="btn-howto-close" class="btn primary" type="button">Got it</button>
   </div>
@@ -111,6 +115,10 @@
     <label class="slider-row">Screen shake
       <input id="shake-range" type="range" min="0" max="100" value="100" aria-label="Screen shake strength">
       <span id="shake-value">100%</span>
+    </label>
+    <label class="slider-row">Volume
+      <input id="volume-range-pause" type="range" min="0" max="100" value="60" aria-label="Volume">
+      <span id="volume-value-pause">60%</span>
     </label>
     <button id="btn-mute-pause" class="btn small" type="button">Sound: On</button>
   </div>
