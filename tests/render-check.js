@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.4.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.5.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -9,10 +9,12 @@
 // bot-verified line completes it in 1 shot; level 8 "Carousel" has a
 // moving planet whose mesh position actually changes over time, and a
 // launch there resolves cleanly.
-// Block 4 additions (juice pass 1): a collect fires a shockwave ring and
-// live particles; a planet crash fires a large-tier trauma (>= 0.7) with a
-// real hit-stop that restores; a grazing Level 4 line credits a slingshot
-// near-miss.
+// Block 4: the grazing Level 4 line (-20deg, power 0.3) collects the
+// target and credits a slingshot near-miss as it skims the planet.
+// Block 5 additions (audio): layered music + intensity, the completed SFX
+// set, and a persisted volume slider — see the audio block after the
+// first level-1 shot, the level-3 intensity check after the save seed,
+// and the last-shot warning check below.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -126,11 +128,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.4.0') throw new Error(`expected version 0.4.0, got ${version}`);
+  if (version !== '0.5.0') throw new Error(`expected version 0.5.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.4.0')) throw new Error('menu version v0.4.0 missing');
+  if (!menuText.includes('v0.5.0')) throw new Error('menu version v0.5.0 missing');
   if (!menuText.includes('/ 24')) throw new Error('menu total stars should be / 24 (8 levels)');
-  console.log('render-check: menu renders with v0.4.0');
+  console.log('render-check: menu renders with v0.5.0');
 
   // Block 2: level cards show par and the star thresholds.
   const cardText = await page.textContent('#level-select');
@@ -225,6 +227,80 @@ try {
     throw new Error('launch did not consume a shot');
   }
 
+  // Block 5: audio — completing level 1 unlocks level 2, which rings the
+  // unlock chime after the win arpeggio; the music scheduler runs at
+  // calm intensity 0 on level 1 with the default 60% volume, unmuted.
+  await page.waitForFunction(
+    () => window.__orbit.audioState().lastSfx === 'unlock',
+    null, { polling: 50, timeout: 10000 },
+  );
+  const audio1 = await page.evaluate(() => window.__orbit.audioState());
+  if (!audio1.audioReady) throw new Error('AudioContext was not created on PLAY');
+  if (!audio1.musicPlaying) throw new Error('music scheduler is not running after PLAY');
+  if (audio1.intensity !== 0) throw new Error(`level 1 calm intensity should be 0, got ${audio1.intensity}`);
+  if (audio1.volume !== 0.6) throw new Error(`default volume should be 0.6, got ${audio1.volume}`);
+  if (audio1.muted) throw new Error('game should start unmuted');
+  console.log(`render-check: unlock chime fired, music playing at intensity ${audio1.intensity}, volume ${audio1.volume}`);
+
+  // Block 5: mute toggle flips the persisted setting and the HUD label.
+  await page.evaluate(() => document.getElementById('btn-mute-hud').click());
+  const mutedState = await page.evaluate(() => ({
+    muted: window.__orbit.audioState().muted,
+    label: document.getElementById('btn-mute-hud').textContent,
+  }));
+  if (!mutedState.muted || mutedState.label !== 'Sound: Off') {
+    throw new Error(`mute toggle failed: ${JSON.stringify(mutedState)}`);
+  }
+  await page.evaluate(() => document.getElementById('btn-mute-hud').click());
+  if ((await page.evaluate(() => window.__orbit.audioState().muted))) {
+    throw new Error('second mute toggle should unmute');
+  }
+  console.log('render-check: mute toggle flips state and label, and back');
+
+  // Block 5: volume slider (pause menu) changes the live volume, persists
+  // it to localStorage, and syncs the menu slider to the same value.
+  await page.evaluate(() => window.__orbit.selectLevel(1));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.keyboard.press('p');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'paused', null, { timeout: 5000 });
+  await page.evaluate(() => {
+    const el = document.getElementById('volume-range-pause');
+    el.value = '30';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const vol = await page.evaluate(() => ({
+    volume: window.__orbit.audioState().volume,
+    menuSlider: document.getElementById('volume-range-menu').value,
+    stored: JSON.parse(window.localStorage.getItem('nor-settings') || '{}').volume,
+  }));
+  if (vol.volume !== 0.3) throw new Error(`volume slider should set 0.3, got ${vol.volume}`);
+  if (vol.menuSlider !== '30') throw new Error(`menu slider should sync to 30, got ${vol.menuSlider}`);
+  if (vol.stored !== 0.3) throw new Error(`volume should persist as 0.3, got ${vol.stored}`);
+  console.log('render-check: volume slider sets 0.3 live, persists, and syncs to the menu slider');
+  await page.click('#btn-resume');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+
+  // Block 5: last-shot warning — burn 3 straight-up shots (each flies out
+  // of bounds) so 1 shot remains; entering aim with 1 left fires the
+  // lastShot SFX and the music jumps to tense intensity 1.
+  for (let n = 1; n <= 3; n++) {
+    await page.evaluate(() => {
+      window.__orbit.aim(Math.PI / 2, 1.0);
+      window.__orbit.launch();
+    });
+    await page.waitForFunction(
+      (want) => window.__orbit.state.shotsUsed >= want,
+      n, { timeout: 15000 },
+    );
+  }
+  await page.waitForFunction(
+    () => window.__orbit.audioState().lastSfx === 'lastShot',
+    null, { polling: 50, timeout: 10000 },
+  );
+  const tense = await page.evaluate(() => window.__orbit.audioState().intensity);
+  if (tense !== 1) throw new Error(`last-shot intensity should be 1, got ${tense}`);
+  console.log('render-check: last-shot warning fired, music at tense intensity 1');
+
   // Block 3: level 7 "Event Horizon" has a black hole; the bot-verified
   // line (-10 degrees, full power) arcs over it and completes the level.
   // Seed a save that unlocks all 8 levels, then reload to pick it up.
@@ -240,6 +316,14 @@ try {
   const cardText7 = await page.textContent('#level-select');
   if (!cardText7.includes('Event Horizon')) throw new Error('level 7 card missing');
   if (!cardText7.includes('Carousel')) throw new Error('level 8 card missing');
+
+  // Block 5: level 3+ runs the music at mid intensity 1 (bass + arpeggio)
+  // from the first aim, with a full shot budget.
+  await page.evaluate(() => window.__orbit.selectLevel(3));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const mid = await page.evaluate(() => window.__orbit.audioState().intensity);
+  if (mid !== 1) throw new Error(`level 3 mid intensity should be 1, got ${mid}`);
+  console.log('render-check: level 3 music runs at mid intensity 1 (bass + arpeggio)');
   await page.evaluate(() => window.__orbit.selectLevel(7));
   await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
   const info7 = await page.evaluate(() => window.__orbit.info());
