@@ -1,4 +1,4 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.3.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.4.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
@@ -6,11 +6,11 @@ import {
   LEVELS, PLAYFIELD_RADIUS, SUBSTEP,
   levelById, shotBudget, starsForShots, starThresholds, isLevelComplete,
   generateDecor, launchState, stepFlight, previewShot, planetPosAt,
-  levelHasMovingPlanets, levelBlackHoles,
+  levelHasMovingPlanets, levelBlackHoles, FEEDBACK, isNearMiss,
   defaultSave, serializeSave, parseSave, totalStars,
 } from './physics.js';
 
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -148,6 +148,10 @@ const sfx = {
   swallow() {
     tone(320, 0.5, 'sine', 0.2, 40);
     noiseBurst(0.3, 0.1, 400);
+  },
+  slingshot() {
+    tone(240, 0.35, 'sine', 0.12, 960);
+    tone(480, 0.2, 'triangle', 0.06, 1440, 0.05);
   },
   win() {
     [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.22, 'sine', 0.15, null, i * 0.09));
@@ -396,41 +400,106 @@ function updateParticles(dt) {
   particleGeo.attributes.color.needsUpdate = true;
 }
 
+// Pooled shockwave rings: one ring geometry, one material per slot (the
+// opacity fades per ring), reused round-robin so a collect never allocates.
+const SHOCKWAVE_MAX = 8;
+const shockwaveGeo = new THREE.RingGeometry(0.85, 1, 48);
+const shockwaves = [];
+for (let i = 0; i < SHOCKWAVE_MAX; i++) {
+  const mesh = new THREE.Mesh(shockwaveGeo, new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  }));
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  shockwaves.push({ mesh, life: 0, maxLife: 1, maxScale: 5 });
+}
+let shockwaveCursor = 0;
+
+function spawnShockwave(x, y, hexColor, maxScale, life) {
+  const s = shockwaves[shockwaveCursor];
+  shockwaveCursor = (shockwaveCursor + 1) % SHOCKWAVE_MAX;
+  s.mesh.position.set(x, y, 0.1);
+  s.mesh.material.color.setHex(hexColor);
+  s.mesh.scale.setScalar(0.3);
+  s.mesh.material.opacity = 0.9;
+  s.mesh.visible = true;
+  s.life = life;
+  s.maxLife = life;
+  s.maxScale = maxScale;
+}
+
+function updateShockwaves(dt) {
+  for (const s of shockwaves) {
+    if (s.life <= 0) continue;
+    s.life -= dt;
+    if (s.life <= 0) {
+      s.mesh.visible = false;
+      s.mesh.material.opacity = 0;
+      continue;
+    }
+    // Ease-out expansion: fast at first, settling into the full ring.
+    const p = 1 - s.life / s.maxLife;
+    const e = 1 - (1 - p) * (1 - p);
+    s.mesh.scale.setScalar(0.3 + (s.maxScale - 0.3) * e);
+    s.mesh.material.opacity = 0.9 * (1 - p);
+  }
+}
+
+function countAliveParticles() {
+  let n = 0;
+  for (let i = 0; i < PARTICLE_MAX; i++) if (pLife[i] > 0) n++;
+  return n;
+}
+
 // ---------------------------------------------------------------- feedback
 // Trauma shake: shake = trauma^2, decays in real time (keeps settling during hit-stop).
+// Hit-stop ownership: every hit-stop takes a fresh token; only the newest
+// token's deadline freezes time, so an older, longer stop can never end a
+// newer freeze early (and vice versa — the newest stop owns the restore).
 let trauma = 0;
 let hitStopUntil = 0;
+let hitStopToken = 0;
+let slingshotCount = 0; // near-miss slingshots credited on the current shot
 
 function addTrauma(amount) {
   trauma = Math.min(1, trauma + amount);
 }
 function hitStop(seconds) {
+  hitStopToken++;
   hitStopUntil = performance.now() + seconds * 1000;
 }
 
 // One funnel for every game-feel event, so responses stay proportional.
+// Trauma + hit-stop come from the FEEDBACK tier table in physics.js;
+// each kind then adds its own sound, particle burst and shockwave ring.
 function feedback(kind, x, y) {
-  if (kind === 'launch') { addTrauma(0.12); sfx.launch(); }
+  const f = FEEDBACK[kind];
+  if (!f) return;
+  addTrauma(f.trauma);
+  if (f.hitStop > 0) hitStop(f.hitStop);
+  if (kind === 'launch') { sfx.launch(); }
   else if (kind === 'collect') {
-    addTrauma(0.18);
     sfx.collect();
     spawnBurst(x, y, 0, 0xff2d95, 26, 7, 0.7);
+    spawnShockwave(x, y, 0xff2d95, 4.5, 0.7);
   } else if (kind === 'crash') {
-    addTrauma(0.85);
-    hitStop(0.12);
     sfx.crash();
     spawnBurst(x, y, 0, 0xff6b35, 40, 9, 0.9);
+    spawnShockwave(x, y, 0xff6b35, 6, 0.7);
   } else if (kind === 'lost') {
-    addTrauma(0.15);
     sfx.lost();
     spawnBurst(x, y, 0, 0x22d3ee, 16, 5, 0.6);
   } else if (kind === 'swallowed') {
-    addTrauma(0.6);
-    hitStop(0.08);
     sfx.swallow();
     spawnBurst(x, y, 0, 0xa855f7, 36, 8, 0.9);
+    spawnShockwave(x, y, 0xa855f7, 5, 0.7);
+  } else if (kind === 'slingshot') {
+    slingshotCount++;
+    sfx.slingshot();
+    spawnBurst(x, y, 0, 0xffd166, 14, 6, 0.5);
   } else if (kind === 'win') {
-    addTrauma(0.3);
     sfx.win();
   }
 }
@@ -745,6 +814,7 @@ function launch() {
   flight = launchState(level, state.aimAngle, state.aimPower, levelTime);
   flightAcc = 0;
   flightEnding = false;
+  slingshotCount = 0;
   state.phase = 'fly';
   previewLine.visible = false;
   previewDots.visible = false;
@@ -797,7 +867,10 @@ function completeLevel() {
   state.phase = 'complete';
   state.targetsRemaining = 0;
   feedback('win', 0, 0);
-  for (const t of level.targets) spawnBurst(t.x, t.y, 0, 0xffd166, 30, 8, 1.0);
+  for (const t of level.targets) {
+    spawnBurst(t.x, t.y, 0, 0xffd166, 30, 8, 1.0);
+    spawnShockwave(t.x, t.y, 0xffd166, 7, 0.9);
+  }
   $('complete-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
   $('complete-shots').textContent =
     `Finished in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'} (par ${level.par})`;
@@ -860,6 +933,18 @@ function stepFlightLoop(dt) {
     const level = levelById(state.levelId);
     const ev = stepFlight(flight, level, SUBSTEP, state.collected, tmpNewly);
     comet.position.set(flight.x, flight.y, 0);
+    // Near-miss slingshot: skim within the band of a planet's surface
+    // (close enough to feel the bend, far enough to live) — once per
+    // planet per shot, with a gold burst and a rising sweep.
+    level.planets.forEach((p, i) => {
+      if (flight.slingshotPlanets.includes(i)) return;
+      const pos = planetPosAt(p, levelTime);
+      const d = Math.hypot(flight.x - pos.x, flight.y - pos.y);
+      if (isNearMiss(d, p.r)) {
+        flight.slingshotPlanets.push(i);
+        feedback('slingshot', flight.x, flight.y);
+      }
+    });
     if (ev && ev.type === 'collect') {
       for (const idx of tmpNewly) {
         const mesh = targetMeshes[idx];
@@ -1115,6 +1200,7 @@ function animate(now) {
   }
   if (!stopped) {
     updateParticles(dt);
+    updateShockwaves(dt);
     const level = levelById(state.levelId);
     if (level) {
       // The level clock runs while aiming; during flight it advances in
@@ -1179,6 +1265,16 @@ window.__orbit = {
       planetPositions: planetMeshes.map((m) => [m.position.x, m.position.y]),
     };
   },
+  // Live game-feel state for the render check: trauma, hit-stop, active
+  // shockwave rings, live particles, slingshots credited on this shot.
+  feedbackState: () => ({
+    trauma,
+    hitStopActive: performance.now() < hitStopUntil,
+    hitStopToken,
+    shockwavesActive: shockwaves.filter((s) => s.life > 0).length,
+    particlesAlive: countAliveParticles(),
+    slingshotCount,
+  }),
   newGame: () => {
     save = defaultSave();
     persistSave();

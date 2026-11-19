@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -8,6 +8,36 @@ export const COMET_RADIUS = 0.5;
 export const SUBSTEP = 1 / 120; // fixed integration step (s)
 export const MAX_SIM_TIME = 10; // a shot that is still flying is lost
 export const GRAVITY_SOFTEN = 1.0; // softening scale, multiplied by planet radius
+
+// ---------------------------------------------------------------- game feel
+// Feedback tiers from the game-feel skill: small events get 0.10-0.20
+// trauma with no hit-stop, medium events 0.30-0.50 trauma with a
+// 0.04-0.06s stop, large events 0.70-1.00 trauma with a 0.10-0.15s stop.
+// FEEDBACK pins every event kind to its tier so the game stays
+// proportional; game.js reads this table, smoke.js asserts the ranges.
+export const FEEDBACK_TIERS = {
+  small: { traumaMin: 0.10, traumaMax: 0.20, stopMin: 0, stopMax: 0 },
+  medium: { traumaMin: 0.30, traumaMax: 0.50, stopMin: 0.04, stopMax: 0.06 },
+  large: { traumaMin: 0.70, traumaMax: 1.00, stopMin: 0.10, stopMax: 0.15 },
+};
+export const FEEDBACK = {
+  launch: { tier: 'small', trauma: 0.12, hitStop: 0 },
+  collect: { tier: 'small', trauma: 0.18, hitStop: 0 },
+  lost: { tier: 'small', trauma: 0.15, hitStop: 0 },
+  slingshot: { tier: 'small', trauma: 0.15, hitStop: 0 },
+  win: { tier: 'medium', trauma: 0.30, hitStop: 0.05 },
+  swallowed: { tier: 'medium', trauma: 0.50, hitStop: 0.06 },
+  crash: { tier: 'large', trauma: 0.85, hitStop: 0.12 },
+};
+
+// Near-miss (slingshot) band: a comet passing within NEAR_MISS_BAND of a
+// planet's surface — close enough to feel the bend, far enough to live —
+// counts as a slingshot. The crash radius is planet radius + COMET_RADIUS.
+export const NEAR_MISS_BAND = 2.0;
+export function isNearMiss(dist, planetRadius) {
+  const surface = planetRadius + COMET_RADIUS;
+  return dist > surface && dist < surface + NEAR_MISS_BAND;
+}
 
 // ---------------------------------------------------------------- levels
 // One palette, one art direction: violet planets, magenta targets, cyan comet.
@@ -163,6 +193,7 @@ export function launchState(level, angle, power, t0 = 0) {
     x: level.pad.x, y: level.pad.y,
     vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
     t: 0, t0, done: false,
+    slingshotPlanets: [], // planet indices already credited this shot
   };
 }
 

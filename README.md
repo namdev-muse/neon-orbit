@@ -6,7 +6,7 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.3.0
+**Version:** v0.4.0
 
 ## How to play
 
@@ -23,7 +23,13 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 - **Moving planets** orbit a centre point (the faint ring shows the path).
   The trajectory preview follows them live, so time your launch for when
   the bend lines up.
-- Collect **every magenta target** before you run out of shots.
+- Collect **every magenta target** before you run out of shots. Each
+  collect fires a magenta shockwave ring and a particle burst; a win
+  fires gold rings at every target.
+- Skim close past a planet — inside 2 units of its surface without
+  touching it — for a **slingshot** flash: a gold burst and a rising
+  sweep. Crashing instead freezes the frame for a beat (hit-stop) and
+  shakes the camera hard.
 - Beat par for **3 stars** (par+1 = 2 stars, within budget = 1 star).
   Finishing a level unlocks the next one. Each level card and the HUD show
   the par and the exact star thresholds.
@@ -60,7 +66,12 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 - One antialiased renderer (pixel ratio capped at 2), one PerspectiveCamera
   on a separate rig so screen shake never moves colliders.
 - Pooled particles, trauma-based screen shake with hit-stop, Web Audio synth
-  SFX and a simple music loop.
+  SFX and a simple music loop. Every feedback event is pinned to a tier
+  in `physics.js` (`FEEDBACK`): small events 0.10–0.20 trauma with no
+  stop, medium 0.30–0.50 with a 0.04–0.06s stop, large 0.70–1.00 with a
+  0.10–0.15s stop — and only the newest hit-stop owns the restore, so
+  overlapping hits never end a freeze early. Shockwave rings are pooled
+  (8 slots, reused round-robin) and expand with an ease-out before fading.
 - Best stars per level and settings persist in localStorage (`nor-stars`,
   `nor-settings`).
 
@@ -75,7 +86,7 @@ python3 -m http.server 8123
 
 ```sh
 npm test            # smoke tests + bot harness
-node tests/smoke.js # physics / levels / save round-trip (83 checks)
+node tests/smoke.js # physics / levels / save round-trip (111 checks)
 node tests/bot.js   # auto-aim solver plays all 8 levels to completion
 node tests/render-check.js  # headless Chromium: menu renders, a run starts,
                             # a launch moves the comet, zero console errors
