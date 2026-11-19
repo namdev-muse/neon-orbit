@@ -98,3 +98,35 @@ showcase levels.
   fixed t0, time-dependence of the same launch, swallow + preview, orbit
   clearance for targets and pad). Levels 7–8 are the first two of backlog
   #15 (levels 7–12); #15 stays open for levels 9–12.
+
+## Block 4 — 2026-11-20 02:30 Asia/Bangkok (v0.4.0)
+
+Juice pass 1: hit-stop + trauma tiers, particle bursts, shockwave rings
+(backlog #25, #26, #27).
+
+- **Hit-stop + trauma tiers (#25):** every feedback event is now pinned to
+  a tier in the `FEEDBACK` table in `physics.js`, following the game-feel
+  skill — small events (launch, collect, lost, slingshot) 0.10–0.20 trauma
+  with no stop, medium (win 0.30/0.05s, swallowed 0.50/0.06s) and large
+  (crash 0.85/0.12s). Hit-stop ownership is token-based: every stop takes
+  a fresh token and only the newest token's deadline freezes time, so
+  overlapping hits never end a freeze early. Smoke tests assert every
+  entry sits inside its tier's ranges.
+- **Particle bursts (#26):** the pooled burst system (240 slots, additive
+  blending) now also fires on a near-miss slingshot — skim within 2 world
+  units of a planet's surface without touching it and the comet flashes a
+  gold burst with a rising sweep SFX, once per planet per shot
+  (`isNearMiss` in `physics.js`, `slingshotPlanets` ledger on the flight
+  state). The verified grazing line is Level 4 at -20 degrees, power 0.3,
+  which collects while passing 3.38 units from the planet centre.
+- **Shockwave rings (#27):** a pool of 8 ring meshes (one geometry, one
+  material per slot, reused round-robin) expands with an ease-out and
+  fades — magenta on collect, orange on crash, violet on swallow, gold
+  rings at every target on a win. Rings and particles freeze during
+  hit-stop while trauma keeps decaying in real time, so the shake
+  settles instead of freezing off-centre.
+- Tests: smoke grew 83 → 111 checks (tier ranges, near-miss band
+  boundaries, the Level 4 graze line). The render check now asserts a
+  collect fires a live shockwave + particles, a Level 4 crash reads
+  0.93 trauma with a real hit-stop that restores, and the grazing line
+  credits a slingshot — all with zero console errors.
