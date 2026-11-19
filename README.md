@@ -6,7 +6,7 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.6.0
+**Version:** v0.7.0
 
 ## How to play
 
@@ -32,7 +32,13 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
   shakes the camera hard.
 - Beat par for **3 stars** (par+1 = 2 stars, within budget = 1 star).
   Finishing a level unlocks the next one. Each level card and the HUD show
-  the par and the exact star thresholds.
+  the par and the exact star thresholds. The menu's campaign map tracks
+  the whole run — a progress bar (levels cleared, stars out of 24) and a
+  gold **NEXT** ring on the next uncompleted level. **My Stats** lists
+  your best stars per level plus your daily best, endless run record, and
+  how many shared seeds you've played. Running out of shots shows the
+  attempt stats (shots used vs budget, par, banked best) with Retry,
+  Level Select, and Main Menu.
 
 ## Daily, seeds & Endless
 
@@ -105,7 +111,8 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
   levels register under ids 900–902 and never touch the campaign unlock
   chain; daily and per-seed bests persist in the save.
 - Best stars per level and settings persist in localStorage (`nor-stars`,
-  `nor-settings`).
+  `nor-settings`). The save also records the endless run record
+  (`endlessBest`: most rounds cleared in one run).
 
 ## Run locally
 

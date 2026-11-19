@@ -1,4 +1,4 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.6.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.7.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
@@ -12,7 +12,7 @@ import {
   generateLevel, registerGeneratedLevel, solveShot,
 } from './physics.js';
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -605,7 +605,7 @@ function feedback(kind, x, y) {
 
 // ---------------------------------------------------------------- DOM helpers
 const $ = (id) => document.getElementById(id);
-const OVERLAYS = ['menu', 'howto', 'complete', 'failed', 'pause'];
+const OVERLAYS = ['menu', 'howto', 'complete', 'failed', 'pause', 'stats'];
 
 function showOverlay(id) {
   for (const o of OVERLAYS) $(o).classList.toggle('hidden', o !== id);
@@ -674,6 +674,10 @@ function hideAimReadout() {
 function renderLevelSelect() {
   const wrap = $('level-select');
   wrap.innerHTML = '';
+  // Campaign map: the next uncompleted unlocked level gets a gold "NEXT"
+  // ring so the player always sees where the campaign continues.
+  const nextLevel = LEVELS.find((l) => l.id <= save.unlocked && (save.stars[l.id] || 0) < 3)
+    || null;
   for (const level of LEVELS) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -681,6 +685,7 @@ function renderLevelSelect() {
     const locked = level.id > save.unlocked;
     const stars = save.stars[level.id] || 0;
     btn.disabled = locked;
+    if (!locked && nextLevel && level.id === nextLevel.id) btn.classList.add('current');
     const name = document.createElement('span');
     name.className = 'lvl-name';
     name.textContent = locked ? `Level ${level.id} — Locked` : `Level ${level.id} — ${level.name}`;
@@ -696,6 +701,12 @@ function renderLevelSelect() {
       parLine.textContent = `Par ${level.par} · ★★★ ≤ ${t.three} · ★★ ${t.two} · ★ ${t.one}`;
     }
     btn.append(name, starLine, parLine);
+    if (!locked && nextLevel && level.id === nextLevel.id) {
+      const nextTag = document.createElement('span');
+      nextTag.className = 'lvl-next';
+      nextTag.textContent = 'NEXT';
+      btn.append(nextTag);
+    }
     btn.addEventListener('click', () => {
       ensureAudio();
       sfx.click();
@@ -703,8 +714,49 @@ function renderLevelSelect() {
     });
     wrap.appendChild(btn);
   }
-  $('total-stars').textContent = String(totalStars(save));
+  // Campaign progress bar: levels cleared and stars earned out of the
+  // campaign totals, so the whole run's progress reads at a glance.
+  const cleared = LEVELS.filter((l) => (save.stars[l.id] || 0) > 0).length;
+  const earned = totalStars(save);
+  const maxStars = LEVELS.length * 3;
+  $('campaign-progress-label').textContent = `Campaign — ${cleared}/${LEVELS.length} cleared`;
+  $('campaign-progress-stars').textContent = `${earned} / ${maxStars} stars`;
+  $('campaign-progress-fill').style.width = `${Math.round((earned / maxStars) * 100)}%`;
+  $('total-stars').textContent = String(earned);
   updateChallengeMenu();
+}
+
+// Best-stars table: one row per campaign level (stars earned + par),
+// a totals line, and the challenge bests — today's daily, the endless
+// run record, and how many shared seeds have a recorded best.
+function renderStats() {
+  const body = $('stats-body');
+  body.innerHTML = '';
+  for (const level of LEVELS) {
+    const row = document.createElement('tr');
+    const stars = save.stars[level.id] || 0;
+    const nameCell = document.createElement('td');
+    nameCell.textContent = `Level ${level.id} — ${level.name}`;
+    const starCell = document.createElement('td');
+    starCell.className = 'stats-stars';
+    starCell.textContent = level.id > save.unlocked ? 'Locked'
+      : ('★'.repeat(stars) + '☆'.repeat(3 - stars));
+    const parCell = document.createElement('td');
+    parCell.textContent = `Par ${level.par}`;
+    row.append(nameCell, starCell, parCell);
+    body.appendChild(row);
+  }
+  const earned = totalStars(save);
+  const cleared = LEVELS.filter((l) => (save.stars[l.id] || 0) > 0).length;
+  $('stats-totals').textContent =
+    `Campaign: ${earned} / ${LEVELS.length * 3} stars · ${cleared} / ${LEVELS.length} levels cleared`;
+  const today = dateKey(new Date());
+  const dailyBest = (save.daily && save.daily.date === today) ? save.daily.stars : 0;
+  const seedCount = save.seedBest ? Object.keys(save.seedBest).length : 0;
+  $('stats-challenge').textContent =
+    `Daily best today: ${'★'.repeat(dailyBest)}${'☆'.repeat(3 - dailyBest)}` +
+    ` · Endless best: ${save.endlessBest || 0} round${(save.endlessBest || 0) === 1 ? '' : 's'}` +
+    ` · ${seedCount} seed${seedCount === 1 ? '' : 's'} played`;
 }
 
 // The Daily button shows today's date plus the best stars earned on it so
@@ -1062,6 +1114,11 @@ function completeLevel() {
   } else if (state.mode === 'seed') {
     const key = state.seedLabel || String(state.challengeSeed);
     if (!save.seedBest[key] || save.seedBest[key] < stars) save.seedBest[key] = stars;
+  } else if (state.mode === 'endless') {
+    // Clearing round n means n rounds cleared in this run — the record.
+    if (!save.endlessBest || save.endlessBest < state.endlessRound) {
+      save.endlessBest = state.endlessRound;
+    }
   }
   persistSave();
   state.phase = 'complete';
@@ -1108,8 +1165,24 @@ function failLevel() {
   if (state.mode === 'endless') {
     const cleared = state.endlessRound - 1;
     text = `Run over — you cleared ${cleared} round${cleared === 1 ? '' : 's'} of Endless Orbit. Retry the round or start a new run.`;
+    if (!save.endlessBest || save.endlessBest < cleared) save.endlessBest = cleared;
+    persistSave();
   }
   $('failed-text').textContent = text;
+  // Failed-screen stats: what this attempt cost, and the best already
+  // banked on this level (campaign) or in this mode (challenge).
+  const budget = shotBudget(level);
+  let statsLine = `Shots used: ${state.shotsUsed} / ${budget} · Par ${level.par}`;
+  if (state.mode === 'campaign') {
+    const best = save.stars[state.levelId] || 0;
+    statsLine += ` · Best on this level: ${'★'.repeat(best)}${'☆'.repeat(3 - best)}`;
+  } else if (state.mode === 'endless') {
+    statsLine += ` · Endless best: ${save.endlessBest || 0} round${(save.endlessBest || 0) === 1 ? '' : 's'}`;
+  } else {
+    const best = challengeBest(state.mode);
+    statsLine += ` · Best here: ${'★'.repeat(best)}${'☆'.repeat(3 - best)}`;
+  }
+  $('failed-stats').textContent = statsLine;
   updateHUD();
   showOnly('failed');
 }
@@ -1319,6 +1392,16 @@ function wireButtons() {
     state.phase = 'howto';
     showOnly('howto');
   });
+  $('btn-stats').addEventListener('click', () => {
+    ensureAudio();
+    sfx.click();
+    renderStats();
+    showOnly('stats');
+  });
+  $('btn-stats-close').addEventListener('click', () => {
+    sfx.click();
+    showOnly('menu');
+  });
   $('btn-howto-close').addEventListener('click', () => {
     ensureAudio();
     sfx.click();
@@ -1350,6 +1433,14 @@ function wireButtons() {
     ensureAudio();
     sfx.click();
     restartCurrent();
+  });
+  // Level Select jumps back to the menu and scrolls the campaign map into
+  // view, so a failed run can pick a different level in one tap.
+  $('btn-level-select').addEventListener('click', () => {
+    sfx.click();
+    quitToMenu();
+    const sel = $('level-select');
+    if (sel && sel.scrollIntoView) sel.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
   $('btn-menu-failed').addEventListener('click', () => { sfx.click(); quitToMenu(); });
   $('btn-resume').addEventListener('click', () => { sfx.click(); resumeGame(); });

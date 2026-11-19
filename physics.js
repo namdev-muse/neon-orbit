@@ -588,12 +588,13 @@ export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0) 
 
 // ---------------------------------------------------------------- save data
 export function defaultSave() {
-  return { stars: {}, unlocked: 1, seenHowTo: false, daily: null, seedBest: {} };
+  return { stars: {}, unlocked: 1, seenHowTo: false, daily: null, seedBest: {}, endlessBest: 0 };
 }
 
 // stars: { levelId: 0..3 }, unlocked: highest unlocked level id.
 // daily: { date: 'YYYY-MM-DD', stars: 0..3 } — best on today's daily level.
 // seedBest: { seedLabel: 0..3 } — best stars per shared seed (capped at 100).
+// endlessBest: most endless rounds cleared in one run (0..99).
 export function serializeSave(save) {
   const daily = save.daily && typeof save.daily.date === 'string'
     && /^\d{4}-\d{2}-\d{2}$/.test(save.daily.date)
@@ -612,6 +613,8 @@ export function serializeSave(save) {
     seenHowTo: !!save.seenHowTo,
     daily,
     seedBest,
+    endlessBest: Number.isInteger(save.endlessBest)
+      ? Math.max(0, Math.min(99, save.endlessBest)) : 0,
   });
 }
 
@@ -643,6 +646,9 @@ export function parseSave(json) {
       for (const [k, v] of Object.entries(raw.seedBest).slice(0, 100)) {
         if (Number.isInteger(v) && v >= 0 && v <= 3) save.seedBest[String(k).slice(0, 32)] = v;
       }
+    }
+    if (Number.isInteger(raw.endlessBest)) {
+      save.endlessBest = Math.max(0, Math.min(99, raw.endlessBest));
     }
     return save;
   } catch {

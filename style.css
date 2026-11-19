@@ -261,6 +261,64 @@ html, body {
 
 .level-btn:hover:not(:disabled) { background: rgba(139, 92, 246, 0.35); box-shadow: 0 0 12px rgba(139, 92, 246, 0.5); }
 .level-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.level-btn.current {
+  border-color: var(--gold);
+  box-shadow: 0 0 14px rgba(255, 209, 102, 0.55);
+  background: rgba(255, 209, 102, 0.12);
+}
+.level-btn .lvl-next {
+  display: block;
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 2px;
+  margin-top: 2px;
+}
+
+/* ---------- Campaign progress (above the level select) ---------- */
+.campaign-progress { margin-top: 14px; }
+.campaign-progress-text {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.campaign-progress-text span:last-child { color: var(--gold); font-weight: 700; }
+.campaign-progress-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(139, 92, 246, 0.25);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+#campaign-progress-fill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #22d3ee, #ffd166);
+  transition: width 0.3s ease;
+}
+
+/* ---------- Stats table ---------- */
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 4px;
+  font-size: 14px;
+  text-align: left;
+}
+.stats-table th, .stats-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(34, 211, 238, 0.18);
+}
+.stats-table th { color: var(--cyan); font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
+.stats-table .stats-stars { color: var(--gold); letter-spacing: 2px; white-space: nowrap; }
+.stats-totals { color: var(--gold); font-weight: 700; margin: 12px 0 4px; font-size: 15px; }
+.stats-challenge { color: var(--muted); margin: 4px 0 14px; font-size: 14px; }
+
+/* ---------- Failed screen stats ---------- */
+.failed-stats { color: var(--muted); font-size: 14px; margin: 0 0 10px; }
 .level-btn .lvl-name { display: block; font-weight: 700; }
 .level-btn .lvl-stars { display: block; color: var(--gold); font-size: 13px; letter-spacing: 2px; min-height: 16px; }
 .level-btn .lvl-par { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }

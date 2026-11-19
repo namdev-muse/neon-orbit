@@ -45,7 +45,7 @@
   <div class="panel">
     <h1>NEON ORBIT</h1>
     <p class="tagline">Slingshot your comet around planets. Collect every star.</p>
-    <p class="version">v0.6.0 &middot; Three.js 0.160.0</p>
+    <p class="version">v0.7.0 &middot; Three.js 0.160.0</p>
     <button id="btn-play" class="btn primary" type="button">Play</button>
     <button id="btn-daily" class="btn" type="button">Daily Orbit</button>
     <button id="btn-endless" class="btn" type="button">Endless Orbit</button>
@@ -54,10 +54,15 @@
       <button id="btn-seed" class="btn small" type="button">Play Seed</button>
     </div>
     <button id="btn-howto" class="btn" type="button">How to Play</button>
+    <button id="btn-stats" class="btn" type="button">My Stats</button>
     <label class="slider-row">Volume
       <input id="volume-range-menu" type="range" min="0" max="100" value="60" aria-label="Volume">
       <span id="volume-value-menu">60%</span>
     </label>
+    <div id="campaign-progress" class="campaign-progress" aria-label="Campaign progress">
+      <div class="campaign-progress-text"><span id="campaign-progress-label">Campaign — 0/8 cleared</span><span id="campaign-progress-stars">0 / 24 stars</span></div>
+      <div class="campaign-progress-bar"><div id="campaign-progress-fill"></div></div>
+    </div>
     <div id="level-select" class="level-select" aria-label="Level select"></div>
     <p class="total-stars">Total stars: <span id="total-stars">0</span> / 24</p>
     <button id="btn-mute-menu" class="btn small" type="button">Sound: On</button>
@@ -108,8 +113,24 @@
   <div class="panel">
     <h2>Out of Shots</h2>
     <p id="failed-text">The comet drifted away. Try a different arc.</p>
+    <p id="failed-stats" class="failed-stats"></p>
     <button id="btn-retry" class="btn primary" type="button">Retry Level</button>
+    <button id="btn-level-select" class="btn" type="button">Level Select</button>
     <button id="btn-menu-failed" class="btn" type="button">Main Menu</button>
+  </div>
+</div>
+
+<!-- Stats -->
+<div id="stats" class="overlay hidden">
+  <div class="panel">
+    <h2>My Stats</h2>
+    <table id="stats-table" class="stats-table" aria-label="Best stars per level">
+      <thead><tr><th>Level</th><th>Stars</th><th>Par</th></tr></thead>
+      <tbody id="stats-body"></tbody>
+    </table>
+    <p id="stats-totals" class="stats-totals"></p>
+    <p id="stats-challenge" class="stats-challenge"></p>
+    <button id="btn-stats-close" class="btn primary" type="button">Back to Menu</button>
   </div>
 </div>
 
