@@ -141,7 +141,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.10.0', VERSION === '0.10.0');
+  check('physics version is 0.11.0', VERSION === '0.11.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -727,6 +727,63 @@ check('level not complete with targets left',
   check('formatClock rounds a fractional second up', formatClock(239.2) === '4:00');
   check('time attack levels are all campaign levels',
     TIME_ATTACK_LEVEL_IDS.every((id) => !!levelById(id)));
+}
+
+// --- Block 11: state audit + NaN guards (#47) ---
+{
+  const emptyLevel = { pad: { x: 0, y: 0 }, planets: [], targets: [{ x: 10, y: 0, r: 1.6 }] };
+
+  // launchState sanitises non-finite input instead of seeding NaN.
+  const nanLaunch = launchState(emptyLevel, NaN, NaN);
+  check('launchState with NaN angle/power gives a finite still comet',
+    Number.isFinite(nanLaunch.vx) && Number.isFinite(nanLaunch.vy)
+    && nanLaunch.vx === 0 && nanLaunch.vy === 0
+    && Number.isFinite(nanLaunch.x) && Number.isFinite(nanLaunch.y));
+  const infLaunch = launchState(emptyLevel, 0, Infinity);
+  check('launchState clamps infinite power to full speed, finite',
+    Number.isFinite(infLaunch.vx) && Math.abs(infLaunch.vx - MAX_SPEED) < 1e-9 && infLaunch.vy === 0);
+  const okLaunch = launchState(emptyLevel, Math.PI / 2, 0.5);
+  check('launchState with valid input is unchanged',
+    Math.abs(okLaunch.vx) < 1e-9 && Math.abs(okLaunch.vy - MAX_SPEED * 0.5) < 1e-9);
+
+  // stepFlight ends a corrupted flight as 'invalid' instead of flying
+  // forever on NaN comparisons that never fire.
+  for (const corrupt of ['vx', 'vy', 'x', 'y']) {
+    const s = launchState(emptyLevel, 0, 0.5);
+    s[corrupt] = NaN;
+    const ev = stepFlight(s, emptyLevel, SUBSTEP, [], []);
+    check(`stepFlight with NaN ${corrupt} returns the invalid event and stops`,
+      !!ev && ev.type === 'invalid' && s.done === true && Array.isArray(ev.targets));
+  }
+  {
+    const s = launchState(emptyLevel, 0, 0.5);
+    s.y = Infinity;
+    const ev = stepFlight(s, emptyLevel, SUBSTEP, [], []);
+    check('stepFlight with infinite position returns the invalid event',
+      !!ev && ev.type === 'invalid' && s.done === true);
+  }
+  {
+    // A healthy step still advances the comet and returns no event.
+    const s = launchState(emptyLevel, 0, 0.5);
+    const ev = stepFlight(s, emptyLevel, SUBSTEP, [], []);
+    check('stepFlight with finite state still steps normally',
+      ev === null && s.done === false && Number.isFinite(s.x) && s.x > 0);
+  }
+
+  // A full simulation from NaN input terminates with a known outcome
+  // and a finite end position — it never hangs or returns NaN.
+  for (const [angle, power] of [[NaN, 0.5], [0, NaN], [NaN, NaN]]) {
+    const sim = simulateLaunch(LEVELS[0], angle, power, [], { record: false });
+    check(`simulateLaunch with NaN input (${angle}, ${power}) terminates cleanly`,
+      ['collected', 'partial', 'crash', 'swallowed', 'lost', 'timeout', 'invalid', 'none'].includes(sim.outcome)
+      && Number.isFinite(sim.end.x) && Number.isFinite(sim.end.y)
+      && Number.isFinite(sim.time) && sim.steps <= Math.ceil(10 / SUBSTEP) + 3);
+  }
+  {
+    const sim = simulateLaunch(LEVELS[0], 0, 0.5);
+    check('simulateLaunch outcome is a known string for a normal launch',
+      ['collected', 'partial', 'crash', 'swallowed', 'lost', 'timeout', 'invalid', 'none'].includes(sim.outcome));
+  }
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);

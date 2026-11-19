@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.10.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.11.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -44,6 +44,13 @@
 // over time and completes through the solver hook; Time Attack starts a
 // 4:00 clock across levels 1-5, shows the HUD timer, and advances to
 // level 2 after the first clear with the clock still running.
+// Block 11 additions (browser playtest + bot harness + bugfix pass):
+// the bot plays the six campaign levels no earlier section completed
+// (2, 3, 4, 5, 6, 8) through the live game, asserting completion and
+// >= 1 star each — so all 12 levels are now bot-verified in the
+// browser; the pause menu's Restart Level and Quit to Menu are clicked
+// for real; and the NaN guards + 1s state audit are exercised by
+// corrupting the live flight and the level clock through the test hook.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -221,11 +228,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.10.0') throw new Error(`expected version 0.10.0, got ${version}`);
+  if (version !== '0.11.0') throw new Error(`expected version 0.11.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.10.0')) throw new Error('menu version v0.10.0 missing');
+  if (!menuText.includes('v0.11.0')) throw new Error('menu version v0.11.0 missing');
   if (!menuText.includes('/ 36')) throw new Error('menu total stars should be / 36 (12 levels)');
-  console.log('render-check: menu renders with v0.10.0');
+  console.log('render-check: menu renders with v0.11.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -638,6 +645,103 @@ try {
   console.log(`render-check: level 12 Moving Stars target drifted ${tMoved.toFixed(2)} units in 1.2s`);
   await playLevelToCompletion(page, 'moving stars');
   console.log('render-check: level 12 Moving Stars completes');
+
+  // Block 11 (#45): the browser bot now plays EVERY campaign level to
+  // completion. Levels 1, 7, 9, 10, 11 and 12 already completed above
+  // (plus daily / seed / endless / Time Attack level 1); this sweep
+  // closes the gaps — 2, 3, 4, 5, 6 and 8 — and asserts at least 1
+  // star on each, so the full campaign is bot-verified in the live game.
+  for (const id of [2, 3, 4, 5, 6, 8]) {
+    await page.evaluate((i) => window.__orbit.selectLevel(i), id);
+    await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+    await playLevelToCompletion(page, `campaign sweep level ${id}`);
+    const sweep = await page.evaluate(() => ({
+      phase: window.__orbit.state.phase,
+      stars: window.__orbit.state.stars,
+      shotsUsed: window.__orbit.state.shotsUsed,
+      name: window.__orbit.state.levelName,
+    }));
+    if (sweep.phase !== 'complete') {
+      throw new Error(`sweep level ${id} did not complete (phase=${sweep.phase})`);
+    }
+    if (sweep.stars < 1) throw new Error(`sweep level ${id} earned 0 stars`);
+    console.log(`render-check: sweep level ${id} "${sweep.name}" complete in ${sweep.shotsUsed} shot(s) -> ${sweep.stars} star(s)`);
+  }
+  console.log('render-check: campaign sweep — all 12 levels now completed in the browser (1, 7, 9-12 above; 2-6, 8 here)');
+
+  // Block 11 (#37): the pause menu's Restart Level and Quit to Menu
+  // both work. Launch a shot, pause mid-flight, restart (fresh aim,
+  // 0 shots used), pause again, quit (back to the menu).
+  await page.evaluate(() => window.__orbit.selectLevel(1));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.evaluate(() => {
+    window.__orbit.aim(Math.PI / 2, 1.0);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
+  await page.keyboard.press('p');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'paused', null, { timeout: 5000 });
+  await page.click('#btn-restart');
+  const restarted = await page.evaluate(() => ({
+    phase: window.__orbit.state.phase,
+    shotsUsed: window.__orbit.state.shotsUsed,
+  }));
+  if (restarted.phase !== 'aim' || restarted.shotsUsed !== 0) {
+    throw new Error(`pause Restart should reset to aim with 0 shots, got: ${JSON.stringify(restarted)}`);
+  }
+  console.log('render-check: pause menu Restart Level resets the level (aim, 0 shots used)');
+  await page.keyboard.press('p');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'paused', null, { timeout: 5000 });
+  await page.click('#btn-quit');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'menu', null, { timeout: 5000 });
+  console.log('render-check: pause menu Quit to Menu returns to the menu');
+
+  // Block 11 (#47): the physics NaN guard and the 1s state audit.
+  // Corrupt the live flight mid-shot: the guard must end the shot
+  // cleanly (phase back to aim, one shot spent, no page error) and the
+  // game must stay playable. Then corrupt the level clock: only the
+  // audit can catch it — it must restart the level within ~10s and
+  // record a recovery.
+  await page.evaluate(() => window.__orbit.selectLevel(1));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.evaluate(() => {
+    window.__orbit.aim(0, 0.6);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
+  const corrupted = await page.evaluate(() => window.__orbit.testCorrupt('flight'));
+  if (!corrupted) throw new Error('testCorrupt(flight) found no live flight to corrupt');
+  await page.waitForFunction(
+    () => window.__orbit.state.phase === 'aim' || window.__orbit.state.phase === 'failed',
+    null, { timeout: 10000 },
+  );
+  const afterCorrupt = await page.evaluate(() => ({
+    phase: window.__orbit.state.phase,
+    shotsUsed: window.__orbit.state.shotsUsed,
+  }));
+  if (afterCorrupt.shotsUsed < 1) {
+    throw new Error(`corrupted flight should cost a shot, got: ${JSON.stringify(afterCorrupt)}`);
+  }
+  console.log(`render-check: corrupted flight ended cleanly as a lost shot (${afterCorrupt.phase}, ${afterCorrupt.shotsUsed} shot used)`);
+  const auditBefore = await page.evaluate(() => window.__orbit.auditState());
+  const timeCorrupted = await page.evaluate(() => window.__orbit.testCorrupt('time'));
+  if (!timeCorrupted) throw new Error('testCorrupt(time) failed');
+  await page.waitForFunction(
+    (before) => window.__orbit.auditState().recoveries > before,
+    auditBefore.recoveries, { polling: 100, timeout: 10000 },
+  );
+  const auditAfter = await page.evaluate(() => ({
+    audit: window.__orbit.auditState(),
+    phase: window.__orbit.state.phase,
+    levelTime: window.__orbit.info().levelTime,
+  }));
+  if (auditAfter.phase !== 'aim') {
+    throw new Error(`audit recovery should leave the level aiming, got phase=${auditAfter.phase}`);
+  }
+  if (!Number.isFinite(auditAfter.levelTime)) {
+    throw new Error('audit recovery should leave a finite level clock');
+  }
+  console.log(`render-check: state audit caught the bad clock and restarted the level (${auditAfter.audit.failures} failure(s), ${auditAfter.audit.recoveries} recoverie(s), last: ${auditAfter.audit.lastFailure})`);
 
   // Block 4: a straight shot into Level 4's planet crashes with a
   // large-tier trauma (>= 0.7) and a real hit-stop that then restores.
