@@ -290,3 +290,53 @@ Touch, keyboard-only play, responsive + camera zoom — backlog items
   a real touchscreen tap launches, a synthetic pinch-out zooms 1 →
   1.42 without launching, and a 390×844 viewport has no horizontal
   overflow with a 2-column grid — all with zero console errors.
+
+## Block 9 — 2026-11-20 05:30 Asia/Bangkok (v0.9.0)
+
+Portals + shields + bounce mechanics — backlog items #8, #9, #10
+(features_done 20 → 23/60). Three new campaign levels (9–11), 33 stars
+total.
+
+- **Portals (#8):** portals come in pairs sharing a `pair` index. Flying
+  into one teleports the comet out of its twin with the entry velocity
+  unchanged, placed just outside the twin's trigger radius along the
+  flight direction so it never re-triggers instantly. The pair then cools
+  down for 0.6s so a fast return pass is not eaten. Twins share a colour
+  (cyan, gold, violet): a torus ring that breathes plus a swirling
+  additive disc. The hop fires a small-tier feedback event (trauma 0.15),
+  a cyan burst + shockwave, and a rising "portal" shimmer SFX. Level 9
+  "Portal Hop" puts a planet on the direct line and a portal pair around
+  it — the solver's first line hops the portal to collect the far target.
+- **Shielded targets (#9):** a target with `hits: 2` needs two contacts.
+  The first cracks the shield (small-tier event, white burst, metallic
+  clink SFX, shield ring vanishes); the second collects it. A shield can
+  only be hit once per shot, and the crack persists across shots in the
+  same attempt — `state.shieldHits` (target → hits remaining) is threaded
+  through `launchState`, `simulateLaunch`, the preview, and the solver,
+  so the preview and the bot both know a cracked shield is one hit from
+  collecting. The solver scores a crack at 4000 (a collect is 10000), so
+  it plans crack-then-collect lines. Level 10 "Shielded Stars" has two
+  shielded targets: 4 shots at par, 3 stars. The `__orbit.solveShot`
+  hook now returns crack-only shots too (with `shieldCracks`), so the
+  render check can drive a shielded level through it.
+- **Bounce pads (#10):** a circular reflector (lime disc + bright rim)
+  reflects the comet's velocity about the radial normal, once per pad per
+  shot, and pushes the comet just outside the pad so the same contact
+  never fires twice. Small-tier feedback (trauma 0.15), a lime burst +
+  shockwave, and a short rubbery "bounce" blip SFX. Level 11 "Bounce
+  House" hides a target behind a heavy planet; the bot-verified line
+  (37.5°, power 0.59) arcs over the pad's top and reflects down onto it.
+- Tests: smoke grew to 321 checks (portal teleport + cooldown, bounce
+  reflection + once-per-shot, shield crack/collect/preview, solver plans
+  that use the portal and the bounce, level 10 taking exactly 4 shots).
+  The bot completes all 14 levels (11 campaign + daily/seed/endless)
+  within budget, 3 stars each. The render check now asserts the portal
+  hop (portalCount 1, portal SFX) and completion on level 9, the shield
+  crack persisting in state (`{"0":1}`, shieldhit SFX) and completion in
+  4 shots on level 10, and the bounce (bounceCount 1, bounce SFX) on the
+  37.5° line plus completion on level 11 — all with zero console errors.
+- Bug found by the render check (fixed before pushing): the
+  `__orbit.solveShot` hook returned null for any shot that collected
+  nothing, so on a shielded level it could never return the crack shot
+  and the render check stalled on level 10. It now returns crack-only
+  shots as well.
