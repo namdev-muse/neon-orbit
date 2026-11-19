@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.8.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.9.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -33,6 +33,12 @@
 // the mouse wheel / HUD buttons / + and - keys zoom the camera (clamped
 // 0.6..2.0), a two-finger pinch zooms without launching, and a 390x844
 // phone viewport shows a 2-column grid with no horizontal overflow.
+// Block 9 additions (portals / shields / bounce): level 9 "Portal Hop"
+// has a paired portal the solver's line hops through, level 10
+// "Shielded Stars" has two shielded targets that crack on the first hit
+// and collect on the second, and level 11 "Bounce House" has a bounce
+// pad the bot-verified line (37.5deg, power 0.59) reflects off to
+// collect a target.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -210,11 +216,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.8.0') throw new Error(`expected version 0.8.0, got ${version}`);
+  if (version !== '0.9.0') throw new Error(`expected version 0.9.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.8.0')) throw new Error('menu version v0.8.0 missing');
-  if (!menuText.includes('/ 24')) throw new Error('menu total stars should be / 24 (8 levels)');
-  console.log('render-check: menu renders with v0.8.0');
+  if (!menuText.includes('v0.9.0')) throw new Error('menu version v0.9.0 missing');
+  if (!menuText.includes('/ 33')) throw new Error('menu total stars should be / 33 (11 levels)');
+  console.log('render-check: menu renders with v0.9.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -237,10 +243,10 @@ try {
   // Block 7: campaign progress bar + NEXT ring on the next uncompleted
   // level, and the My Stats overlay with a per-level best-stars table.
   const progressText = await page.textContent('#campaign-progress');
-  if (!progressText.includes('Campaign — 0/8 cleared')) {
+  if (!progressText.includes('Campaign — 0/11 cleared')) {
     throw new Error(`campaign progress wrong: ${progressText}`);
   }
-  if (!progressText.includes('0 / 24 stars')) {
+  if (!progressText.includes('0 / 33 stars')) {
     throw new Error(`campaign stars wrong: ${progressText}`);
   }
   const nextCard = await page.evaluate(() => {
@@ -250,7 +256,7 @@ try {
   if (!nextCard || !nextCard.includes('First Light') || !nextCard.includes('NEXT')) {
     throw new Error(`next level card should be First Light with a NEXT tag, got: ${nextCard}`);
   }
-  console.log('render-check: campaign progress 0/8 cleared, 0/24 stars, NEXT ring on First Light');
+  console.log('render-check: campaign progress 0/11 cleared, 0/33 stars, NEXT ring on First Light');
 
   const webgl = await page.evaluate(() => {
     const c = document.querySelector('#game-container canvas');
@@ -272,9 +278,9 @@ try {
   await page.click('#btn-stats');
   await page.waitForFunction(() => !document.getElementById('stats').classList.contains('hidden'), null, { timeout: 5000 });
   const statsRows = await page.evaluate(() => document.querySelectorAll('#stats-body tr').length);
-  if (statsRows !== 8) throw new Error(`stats table should have 8 rows, got ${statsRows}`);
+  if (statsRows !== 11) throw new Error(`stats table should have 11 rows, got ${statsRows}`);
   const statsTotals = await page.textContent('#stats-totals');
-  if (!statsTotals.includes('Campaign: 0 / 24 stars · 0 / 8 levels cleared')) {
+  if (!statsTotals.includes('Campaign: 0 / 33 stars · 0 / 11 levels cleared')) {
     throw new Error(`stats totals wrong: ${statsTotals}`);
   }
   const statsChallenge = await page.textContent('#stats-challenge');
@@ -285,7 +291,7 @@ try {
   if (!statsFirstRow.includes('First Light') || !statsFirstRow.includes('☆☆☆')) {
     throw new Error(`stats first row wrong: ${statsFirstRow}`);
   }
-  console.log('render-check: My Stats shows 8 rows, 0/24 stars, daily + endless bests');
+  console.log('render-check: My Stats shows 11 rows, 0/33 stars, daily + endless bests');
   await page.click('#btn-stats-close');
   await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden'), null, { timeout: 5000 });
 
@@ -462,11 +468,11 @@ try {
 
   // Block 3: level 7 "Event Horizon" has a black hole; the bot-verified
   // line (-10 degrees, full power) arcs over it and completes the level.
-  // Seed a save that unlocks all 8 levels, then reload to pick it up.
+  // Seed a save that unlocks all 11 levels, then reload to pick it up.
   await page.evaluate(() => {
     window.localStorage.setItem('nor-stars', JSON.stringify({
-      stars: { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3 },
-      unlocked: 8,
+      stars: { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3 },
+      unlocked: 11,
       seenHowTo: true,
     }));
   });
@@ -525,6 +531,89 @@ try {
     null, { timeout: 15000 },
   );
   console.log('render-check: level 8 launch resolves cleanly');
+
+  // Block 9: level 9 "Portal Hop" has one portal pair; the solver's
+  // first line hops through it to collect the far target.
+  await page.evaluate(() => window.__orbit.selectLevel(9));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const info9 = await page.evaluate(() => window.__orbit.info());
+  if (info9.portals !== 2) throw new Error(`level 9 should have 2 portals, got ${info9.portals}`);
+  const portalShot = await page.evaluate(() => window.__orbit.solveShot());
+  if (!portalShot) throw new Error('solver found no collecting line on level 9');
+  await page.evaluate((s) => {
+    window.__orbit.aim(s.angle, s.power);
+    window.__orbit.launch();
+  }, portalShot);
+  await page.waitForFunction(
+    () => window.__orbit.feedbackState().portalCount >= 1,
+    null, { polling: 20, timeout: 15000 },
+  );
+  const portalAudio = await page.evaluate(() => window.__orbit.audioState().lastSfx);
+  if (portalAudio !== 'portal') throw new Error(`portal hop should play the portal SFX, got: ${portalAudio}`);
+  console.log('render-check: level 9 portal hop fired (portalCount 1, portal SFX)');
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
+    null, { timeout: 15000 },
+  );
+  await playLevelToCompletion(page, 'portal hop');
+  console.log('render-check: level 9 Portal Hop completes');
+
+  // Block 9: level 10 "Shielded Stars" has two shielded targets; the
+  // first hit cracks a shield (no collect), the second collects it.
+  await page.evaluate(() => window.__orbit.selectLevel(10));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const info10 = await page.evaluate(() => window.__orbit.info());
+  if (info10.shieldedTargets !== 2) {
+    throw new Error(`level 10 should have 2 shielded targets, got ${info10.shieldedTargets}`);
+  }
+  const crackShot = await page.evaluate(() => window.__orbit.solveShot());
+  if (!crackShot) throw new Error('solver found no line on level 10');
+  await page.evaluate((s) => {
+    window.__orbit.aim(s.angle, s.power);
+    window.__orbit.launch();
+  }, crackShot);
+  await page.waitForFunction(
+    () => window.__orbit.feedbackState().shieldHitCount >= 1,
+    null, { polling: 20, timeout: 15000 },
+  );
+  const cracked = await page.evaluate(() => window.__orbit.info().shieldHits);
+  if (Object.keys(cracked).length < 1) {
+    throw new Error(`cracked shield should persist in state, got: ${JSON.stringify(cracked)}`);
+  }
+  const shieldAudio = await page.evaluate(() => window.__orbit.audioState().lastSfx);
+  if (shieldAudio !== 'shieldhit') throw new Error(`shield crack should play the shieldhit SFX, got: ${shieldAudio}`);
+  console.log(`render-check: level 10 shield cracked (${JSON.stringify(cracked)}), shieldhit SFX`);
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 1,
+    null, { timeout: 15000 },
+  );
+  await playLevelToCompletion(page, 'shielded stars');
+  console.log('render-check: level 10 Shielded Stars completes in 4 shots');
+
+  // Block 9: level 11 "Bounce House" has one bounce pad; the
+  // bot-verified line (37.5deg, power 0.59) reflects off it to collect
+  // the upper target.
+  await page.evaluate(() => window.__orbit.selectLevel(11));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const info11 = await page.evaluate(() => window.__orbit.info());
+  if (info11.bouncePads !== 1) throw new Error(`level 11 should have 1 bounce pad, got ${info11.bouncePads}`);
+  await page.evaluate(() => {
+    window.__orbit.aim((37.5 * Math.PI) / 180, 0.59);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(
+    () => window.__orbit.feedbackState().bounceCount >= 1,
+    null, { polling: 20, timeout: 15000 },
+  );
+  const bounceAudio = await page.evaluate(() => window.__orbit.audioState().lastSfx);
+  if (bounceAudio !== 'bounce') throw new Error(`bounce should play the bounce SFX, got: ${bounceAudio}`);
+  console.log('render-check: level 11 bounce pad reflected the comet (bounceCount 1, bounce SFX)');
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
+    null, { timeout: 15000 },
+  );
+  await playLevelToCompletion(page, 'bounce house');
+  console.log('render-check: level 11 Bounce House completes');
 
   // Block 4: a straight shot into Level 4's planet crashes with a
   // large-tier trauma (>= 0.7) and a real hit-stop that then restores.
@@ -690,8 +779,8 @@ try {
   }
   await page.keyboard.press('ArrowLeft');
   const wrappedLevel = await page.evaluate(() => document.activeElement && document.activeElement.textContent);
-  if (!wrappedLevel || !wrappedLevel.includes('Carousel')) {
-    throw new Error(`ArrowLeft should wrap focus to the last level (Carousel), got: ${wrappedLevel}`);
+  if (!wrappedLevel || !wrappedLevel.includes('Bounce House')) {
+    throw new Error(`ArrowLeft should wrap focus to the last level (Bounce House), got: ${wrappedLevel}`);
   }
   console.log('render-check: menu arrow keys move focus between level buttons and wrap');
 

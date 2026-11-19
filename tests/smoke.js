@@ -3,7 +3,8 @@ import {
   VERSION, LEVELS, MAX_SPEED, PLAYFIELD_RADIUS, SUBSTEP, levelById, shotBudget,
   starsForShots, starThresholds, isLevelComplete, mulberry32, generateDecor,
   launchState, stepFlight, simulateLaunch, previewShot, planetPosAt,
-  levelHasMovingPlanets, levelBlackHoles, FEEDBACK, FEEDBACK_TIERS,
+  levelHasMovingPlanets, levelBlackHoles, levelPortals, levelBouncePads,
+  targetHits, FEEDBACK, FEEDBACK_TIERS,
   NEAR_MISS_BAND, isNearMiss, COMET_RADIUS,
   defaultSave, serializeSave, parseSave, totalStars,
   dateSeed, dateKey, seedFromString, parseSeedParam, dailyDifficulty,
@@ -20,8 +21,8 @@ function check(name, cond) {
 function approx(a, b, eps = 1e-9) { return Math.abs(a - b) <= eps; }
 
 // --- level definitions ---
-check('8 levels defined', LEVELS.length === 8);
-check('level ids are 1..8 in order', LEVELS.every((l, i) => l.id === i + 1));
+check('11 levels defined', LEVELS.length === 11);
+check('level ids are 1..11 in order', LEVELS.every((l, i) => l.id === i + 1));
 check('every level has a name', LEVELS.every((l) => typeof l.name === 'string' && l.name.length > 0));
 check('every level has a hint', LEVELS.every((l) => typeof l.hint === 'string' && l.hint.length > 0));
 check('every level has a pad inside the playfield',
@@ -48,6 +49,25 @@ check('every black hole has positive radius and gravity',
   LEVELS.every((l) => levelBlackHoles(l).every((b) => b.r > 0 && b.mu > 0)));
 check('every black hole is inside the playfield',
   LEVELS.every((l) => levelBlackHoles(l).every((b) => b.x * b.x + b.y * b.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS)));
+check('every portal is inside the playfield',
+  LEVELS.every((l) => levelPortals(l).every((p) => p.x * p.x + p.y * p.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS)));
+check('every portal has a twin with the same pair index',
+  LEVELS.every((l) => levelPortals(l).every((p) =>
+    levelPortals(l).some((q) => q !== p && (q.pair ?? 0) === (p.pair ?? 0)))));
+check('every bounce pad is inside the playfield',
+  LEVELS.every((l) => levelBouncePads(l).every((p) => p.x * p.x + p.y * p.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS)));
+check('no target overlaps a portal or a bounce pad',
+  LEVELS.every((l) => l.targets.every((t) =>
+    levelPortals(l).every((p) => Math.hypot(t.x - p.x, t.y - p.y) > p.r + t.r + 0.5)
+    && levelBouncePads(l).every((p) => Math.hypot(t.x - p.x, t.y - p.y) > p.r + t.r + 0.5))));
+check('no portal overlaps a planet or a bounce pad',
+  LEVELS.every((l) => levelPortals(l).every((p) =>
+    l.planets.every((q) => Math.hypot(p.x - q.x, p.y - q.y) > p.r + q.r + 0.5)
+    && levelBouncePads(l).every((b) => Math.hypot(p.x - b.x, p.y - b.y) > p.r + b.r + 0.5))));
+check('shielded targets declare hits: 2, unshielded default to 1',
+  LEVELS.every((l) => l.targets.every((t) => targetHits(t) === 1 || targetHits(t) === 2))
+  && targetHits({ x: 0, y: 0, r: 1 }) === 1
+  && targetHits({ x: 0, y: 0, r: 1, hits: 2 }) === 2);
 check('no target overlaps a black hole',
   LEVELS.every((l) => l.targets.every((t) => levelBlackHoles(l).every((b) => {
     const dx = t.x - b.x, dy = t.y - b.y;
@@ -65,6 +85,15 @@ check('moving planets never sweep over a target or the pad',
   })));
 check('level 7 has a black hole', levelBlackHoles(LEVELS[6]).length === 1);
 check('level 8 has a moving planet', levelHasMovingPlanets(LEVELS[7]));
+check('level 9 has one portal pair', levelPortals(LEVELS[8]).length === 2
+  && (LEVELS[8].portals[0].pair ?? 0) === (LEVELS[8].portals[1].pair ?? 0));
+check('level 10 has two shielded targets',
+  LEVELS[9].targets.length === 2 && LEVELS[9].targets.every((t) => targetHits(t) === 2));
+check('level 11 has one bounce pad', levelBouncePads(LEVELS[10]).length === 1);
+check('levels 1-8 have no portals, bounce pads or shielded targets',
+  LEVELS.slice(0, 8).every((l) => levelPortals(l).length === 0
+    && levelBouncePads(l).length === 0
+    && l.targets.every((t) => targetHits(t) === 1)));
 check('levels 1-6 have no black holes or moving planets',
   LEVELS.slice(0, 6).every((l) => levelBlackHoles(l).length === 0 && !levelHasMovingPlanets(l)));
 check('levelById finds level 4', levelById(4) && levelById(4).name === 'The Long Way');
@@ -94,7 +123,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.8.0', VERSION === '0.8.0');
+  check('physics version is 0.9.0', VERSION === '0.9.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -402,9 +431,9 @@ check('level not complete with targets left',
   check('save round-trips unlocked level', back.unlocked === 3);
   check('total stars sums correctly', totalStars(back) === 5);
   check('garbage save text falls back to defaults', parseSave('not json').unlocked === 1);
-  check('save clamps unlocked into range', parseSave('{"unlocked":99}').unlocked === 8);
+  check('save clamps unlocked into range', parseSave('{"unlocked":99}').unlocked === 11);
   check('save drops stars for unknown levels',
-    Object.keys(parseSave('{"stars":{"9":3}}').stars).length === 0);
+    Object.keys(parseSave('{"stars":{"99":3}}').stars).length === 0);
   check('save drops out-of-range star counts',
     Object.keys(parseSave('{"stars":{"1":9}}').stars).length === 0);
   // Daily + seed bests round-trip and validate on load.
@@ -456,6 +485,128 @@ check('level not complete with targets left',
   check('roving focus wraps backward off the start', focusStep(0, 8, -1) === 7);
   check('roving focus steps forward inside the grid', focusStep(3, 8, 1) === 4);
   check('roving focus on an empty grid is -1', focusStep(0, 0, 1) === -1);
+}
+
+// --- Block 9: portals, bounce pads, shielded targets ---
+{
+  check('portal, bounce and shieldhit are small feedback events',
+    FEEDBACK.portal.tier === 'small' && FEEDBACK.portal.hitStop === 0
+    && FEEDBACK.bounce.tier === 'small' && FEEDBACK.bounce.hitStop === 0
+    && FEEDBACK.shieldhit.tier === 'small' && FEEDBACK.shieldhit.hitStop === 0);
+
+  // Portal teleport: a comet flying into portal A exits its twin with
+  // the entry velocity unchanged.
+  const portalLevel = {
+    pad: { x: -10, y: 0 }, planets: [],
+    portals: [{ x: 0, y: 0, r: 1.6, pair: 0 }, { x: 10, y: 8, r: 1.6, pair: 0 }],
+    targets: [{ x: 16, y: 8, r: 1.6 }],
+  };
+  {
+    const s = launchState(portalLevel, 0, 0.6);
+    let ev = null;
+    for (let i = 0; i < 600 && !ev; i++) ev = stepFlight(s, portalLevel, SUBSTEP, [], []);
+    check('flying into a portal fires a portal event', ev && ev.type === 'portal');
+    // Exit sits just outside the twin, along the entry direction.
+    const twin = portalLevel.portals[1];
+    const d = Math.hypot(s.x - twin.x, s.y - twin.y);
+    check('portal exit is just outside the twin portal',
+      d > twin.r + COMET_RADIUS && d < twin.r + COMET_RADIUS + 1);
+    check('portal exit keeps the entry velocity direction',
+      s.vx > 0 && Math.abs(s.vy) < 0.5);
+    // The hop continues the flight: the same shot reaches the target.
+    const full = simulateLaunch(portalLevel, 0, 0.6);
+    check('a shot through the portal reaches the far target',
+      full.outcome === 'collected' && full.portalUses === 1);
+    // The pair cools down: a comet that turns straight back into the
+    // twin within 0.6s passes through instead of hopping again.
+    const s2 = launchState(portalLevel, 0, 0.6);
+    s2.x = 10; s2.y = 8; s2.vx = 13.2; s2.vy = 0; s2.t = 0;
+    s2.portalCooldown[0] = 0.6;
+    const ev2 = stepFlight(s2, portalLevel, SUBSTEP, [], []);
+    check('portal cooldown blocks an instant re-hop', !ev2 || ev2.type !== 'portal');
+  }
+
+  // Bounce pad: a comet hitting the top of a pad reflects downward —
+  // the vertical velocity flips sign and the shot keeps flying.
+  const padLevel = {
+    pad: { x: 0, y: 10 }, planets: [],
+    bouncePads: [{ x: 0, y: 0, r: 2.2 }],
+    targets: [{ x: 8, y: -8, r: 1.6 }],
+  };
+  {
+    const s = launchState(padLevel, -Math.PI / 2, 0.5);
+    let ev = null;
+    let vyBefore = null;
+    for (let i = 0; i < 600 && !ev; i++) {
+      vyBefore = s.vy;
+      ev = stepFlight(s, padLevel, SUBSTEP, [], []);
+    }
+    check('hitting a bounce pad fires a bounce event', ev && ev.type === 'bounce');
+    check('bounce flips the velocity away from the pad (vy was down, now up)',
+      vyBefore < 0 && s.vy > 0);
+    const full = simulateLaunch(padLevel, -Math.PI / 2, 0.5);
+    check('a bounced shot is counted, not lost', full.bounces === 1 && full.outcome !== 'crash');
+    // A pad only fires once per shot: a second contact passes through.
+    const s2 = launchState(padLevel, -Math.PI / 2, 0.5);
+    s2.bouncedPads.push(0);
+    let ev2 = null;
+    for (let i = 0; i < 600 && !ev2; i++) ev2 = stepFlight(s2, padLevel, SUBSTEP, [], []);
+    check('a used bounce pad does not fire again this shot', !ev2 || ev2.type !== 'bounce');
+  }
+
+  // Shielded targets: one shot cracks the shield (no collect), the next
+  // shot with the cracked state collects it; a single shot can never
+  // collect a shielded target, even flying straight through it.
+  const shieldLevel = {
+    pad: { x: 0, y: 0 }, planets: [],
+    targets: [{ x: 10, y: 0, r: 1.6, hits: 2 }],
+  };
+  {
+    const first = simulateLaunch(shieldLevel, 0, 0.5);
+    check('first shot at a shielded target cracks it but collects nothing',
+      first.collected.length === 0 && first.shieldCracks === 1);
+    check('cracked shield state is returned for the next shot',
+      first.shieldHits[0] === 1);
+    const second = simulateLaunch(shieldLevel, 0, 0.5, [], { shieldHits: first.shieldHits });
+    check('second shot at a cracked shield collects the target',
+      second.collected.length === 1 && second.outcome === 'collected');
+    const preview = previewShot(shieldLevel, 0, 0.5, [], 0, first.shieldHits);
+    check('preview with a cracked shield predicts the collect',
+      preview.collected.length === 1);
+    const previewFresh = previewShot(shieldLevel, 0, 0.5);
+    check('preview with an intact shield predicts no collect',
+      previewFresh.collected.length === 0);
+  }
+
+  // The solver completes all three new levels within budget, with the
+  // portal and bounce lines actually using the new mechanics.
+  for (const level of LEVELS.slice(8)) {
+    const plan = solveLevel(level, shotBudget(level));
+    check(`solver completes level ${level.id} "${level.name}" within budget`,
+      !!plan && plan.shots <= shotBudget(level));
+    if (plan) {
+      check(`solver earns at least 1 star on level ${level.id}`,
+        starsForShots(plan.shots, level.par) >= 1);
+    }
+  }
+  {
+    const plan9 = solveLevel(LEVELS[8], shotBudget(LEVELS[8]));
+    const usesPortal = plan9 && plan9.lines.some((l) => {
+      const res = simulateLaunch(LEVELS[8], l.angle, l.power, [], { record: false, t0: l.t0 });
+      return res.portalUses >= 1;
+    });
+    check('level 9 solver plan uses the portal', !!usesPortal);
+    const plan11 = solveLevel(LEVELS[10], shotBudget(LEVELS[10]));
+    const usesBounce = plan11 && plan11.lines.some((l) => {
+      const res = simulateLaunch(LEVELS[10], l.angle, l.power, [], { record: false, t0: l.t0 });
+      return res.bounces >= 1;
+    });
+    check('level 11 solver plan uses the bounce pad', !!usesBounce);
+    // Level 10 needs at least 4 shots: two shielded targets, two hits each.
+    const plan10 = solveLevel(LEVELS[9], shotBudget(LEVELS[9]));
+    check('level 10 solver plan takes 4 shots (two hits per shielded target)',
+      !!plan10 && plan10.shots === 4);
+  }
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);
