@@ -62,7 +62,42 @@ html, body {
 
 #hud-level { font-weight: 700; color: var(--cyan); text-shadow: 0 0 12px rgba(34, 211, 238, 0.7); }
 #hud-stars { color: var(--gold); letter-spacing: 2px; }
+#hud-par { color: var(--gold); font-weight: 700; }
 #hud-shots, #hud-targets { color: var(--text); }
+
+/* ---------- Shot power meter (shown while aiming) ---------- */
+.power-meter {
+  position: fixed;
+  left: 14px;
+  bottom: 18px;
+  width: 180px;
+  height: 22px;
+  background: rgba(11, 6, 32, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  z-index: 5;
+  pointer-events: none;
+}
+
+#power-fill {
+  height: 100%;
+  width: 60%;
+  background: linear-gradient(90deg, #22d3ee, #ffd166);
+  transition: width 0.05s linear;
+}
+
+#power-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
 
 #aim-readout {
   position: fixed;
@@ -228,6 +263,7 @@ html, body {
 .level-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .level-btn .lvl-name { display: block; font-weight: 700; }
 .level-btn .lvl-stars { display: block; color: var(--gold); font-size: 13px; letter-spacing: 2px; min-height: 16px; }
+.level-btn .lvl-par { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
 
 /* ---------- Pause slider ---------- */
 .slider-row {
@@ -248,5 +284,6 @@ html, body {
   #hud { font-size: 13px; padding: 8px 10px; flex-wrap: wrap; }
   #hud .hud-mid { order: 3; width: 100%; justify-content: center; }
   #aim-readout { font-size: 12px; bottom: 10px; max-width: 92vw; white-space: normal; text-align: center; }
+  .power-meter { width: 130px; bottom: 10px; left: 10px; }
   .level-select { grid-template-columns: repeat(2, 1fr); }
 }

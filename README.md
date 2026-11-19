@@ -6,16 +6,21 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.1.0
+**Version:** v0.2.0
 
 ## How to play
 
 - **Drag** back from the comet and **release** to launch — like a slingshot.
-  The gold line previews your trajectory.
+  The trajectory preview shows fading gold dots plus a pulsing end marker
+  coloured by the predicted outcome (gold = target hit, red = planet crash,
+  cyan = flies out), and the readout states the prediction.
+- Hold **Shift** while aiming for fine adjustments (quarter-size steps, also
+  with the arrow keys). The HUD power meter shows launch power live.
 - Planets **bend** your flight with gravity. Use the bend, don't fight it.
 - Collect **every magenta target** before you run out of shots.
 - Beat par for **3 stars** (par+1 = 2 stars, within budget = 1 star).
-  Finishing a level unlocks the next one.
+  Finishing a level unlocks the next one. Each level card and the HUD show
+  the par and the exact star thresholds.
 
 ## Levels
 
@@ -31,7 +36,8 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 ## Controls
 
 - Mouse / touch: drag to aim, release to launch
-- Arrow keys: adjust angle and power · Space: launch
+- Hold Shift while aiming for fine adjustments
+- Arrow keys: adjust angle and power (Shift = fine) · Space: launch
 - R: retry level · P: pause · M: mute
 
 ## Tech
@@ -58,7 +64,7 @@ python3 -m http.server 8123
 
 ```sh
 npm test            # smoke tests + bot harness
-node tests/smoke.js # physics / levels / save round-trip (52 checks)
+node tests/smoke.js # physics / levels / save round-trip (63 checks)
 node tests/bot.js   # auto-aim solver plays all 6 levels to completion
 node tests/render-check.js  # headless Chromium: menu renders, a run starts,
                             # a launch moves the comet, zero console errors

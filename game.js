@@ -1,20 +1,22 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.1.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.2.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
 import {
   LEVELS, PLAYFIELD_RADIUS, SUBSTEP,
-  levelById, shotBudget, starsForShots, isLevelComplete,
-  generateDecor, launchState, stepFlight, simulateLaunch,
+  levelById, shotBudget, starsForShots, starThresholds, isLevelComplete,
+  generateDecor, launchState, stepFlight, previewShot,
   defaultSave, serializeSave, parseSave, totalStars,
 } from './physics.js';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
 const MAX_DRAG = 12; // world units of pull for full launch power
 const PREVIEW_MAX = 240;
+const PREVIEW_DOTS = 96; // fading trajectory dots sampled from the preview
+const FINE_AIM_SCALE = 0.25; // Shift-held drag moves the aim 4x slower
 const TRAIL_MAX = 48;
 const PARTICLE_MAX = 240;
 
@@ -30,6 +32,9 @@ const state = {
   collected: [],
   aimAngle: 0,
   aimPower: 0.6,
+  fineAim: false,
+  previewOutcome: 'none', // collect | crash | lost | none (predicted shot end)
+  previewEnd: null, // { x, y } predicted end of the previewed shot
   stars: 0,
   unlocked: 1,
   phaseBeforePause: 'aim',
@@ -261,16 +266,48 @@ comet.add(cometLight);
 comet.visible = false;
 scene.add(comet);
 
-// Trajectory preview line (gold).
+// Trajectory preview line (gold, faint — the fading dots carry the read).
 const previewPositions = new Float32Array(PREVIEW_MAX * 3);
 const previewGeo = new THREE.BufferGeometry();
 previewGeo.setAttribute('position', new THREE.BufferAttribute(previewPositions, 3));
 const previewLine = new THREE.Line(previewGeo, new THREE.LineBasicMaterial({
-  color: 0xffd166, transparent: true, opacity: 0.85,
+  color: 0xffd166, transparent: true, opacity: 0.3,
 }));
 previewLine.frustumCulled = false;
 previewLine.visible = false;
 scene.add(previewLine);
+
+// Fading trajectory dots: gold near the comet, dimming to indigo far along
+// the path, so the eye reads direction and distance at a glance.
+const dotPositions = new Float32Array(PREVIEW_DOTS * 3);
+const dotColors = new Float32Array(PREVIEW_DOTS * 3);
+const dotGeo = new THREE.BufferGeometry();
+dotGeo.setAttribute('position', new THREE.BufferAttribute(dotPositions, 3));
+dotGeo.setAttribute('color', new THREE.BufferAttribute(dotColors, 3));
+const previewDots = new THREE.Points(dotGeo, new THREE.PointsMaterial({
+  size: 0.55, vertexColors: true, transparent: true, opacity: 0.95,
+  depthWrite: false,
+}));
+previewDots.frustumCulled = false;
+previewDots.visible = false;
+scene.add(previewDots);
+
+// Predicted-end marker: a pulsing ring at the previewed shot's end point,
+// coloured by predicted outcome — gold = target hit, red = planet crash,
+// cyan = flies out of bounds / runs out of steam.
+const previewEndRing = new THREE.Mesh(
+  new THREE.TorusGeometry(0.9, 0.09, 8, 40),
+  new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9 }),
+);
+previewEndRing.frustumCulled = false;
+previewEndRing.visible = false;
+scene.add(previewEndRing);
+const PREVIEW_END_COLORS = {
+  collect: 0xffd166,
+  crash: 0xff3b30,
+  lost: 0x22d3ee,
+  none: 0x22d3ee,
+};
 
 // Comet trail (cyan line, recent positions).
 const trailPositions = new Float32Array(TRAIL_MAX * 3);
@@ -394,10 +431,32 @@ function updateHUD() {
   $('hud-level').textContent = level ? `Level ${level.id} — ${level.name}` : '';
   const best = save.stars[state.levelId] || 0;
   $('hud-stars').textContent = '★'.repeat(best) + '☆'.repeat(3 - best);
+  $('hud-par').textContent = level ? `Par ${level.par}` : '';
   $('hud-shots').textContent = `Shots ${state.shotsUsed}/${budget}`;
   $('hud-targets').textContent = state.targetsRemaining === 0
     ? 'All targets collected'
     : `Targets ${state.targetsRemaining} left`;
+}
+
+// Shot power meter (HUD, shown while aiming): fill width = launch power,
+// colour ramps cyan -> gold -> red as power rises.
+function updatePowerMeter() {
+  const meter = $('power-meter');
+  const fill = $('power-fill');
+  const label = $('power-label');
+  if (state.phase !== 'aim') {
+    meter.classList.add('hidden');
+    return;
+  }
+  meter.classList.remove('hidden');
+  const pct = Math.round(state.aimPower * 100);
+  fill.style.width = `${pct}%`;
+  fill.style.background = state.aimPower < 0.5
+    ? 'linear-gradient(90deg, #22d3ee, #7dd3fc)'
+    : state.aimPower < 0.8
+      ? 'linear-gradient(90deg, #22d3ee, #ffd166)'
+      : 'linear-gradient(90deg, #ffd166, #ff3b30)';
+  label.textContent = `Power ${pct}%${state.fineAim ? ' · FINE' : ''}`;
 }
 
 function setAimReadout(text) {
@@ -425,7 +484,15 @@ function renderLevelSelect() {
     const starLine = document.createElement('span');
     starLine.className = 'lvl-stars';
     starLine.textContent = locked ? 'Locked' : ('★'.repeat(stars) + '☆'.repeat(3 - stars));
-    btn.append(name, starLine);
+    const parLine = document.createElement('span');
+    parLine.className = 'lvl-par';
+    if (locked) {
+      parLine.textContent = 'Finish the previous level';
+    } else {
+      const t = starThresholds(level.par);
+      parLine.textContent = `Par ${level.par} · ★★★ ≤ ${t.three} · ★★ ${t.two} · ★ ${t.one}`;
+    }
+    btn.append(name, starLine, parLine);
     btn.addEventListener('click', () => {
       ensureAudio();
       sfx.click();
@@ -491,18 +558,41 @@ function setAim(angle, power) {
   state.aimAngle = angle;
   state.aimPower = Math.max(0.05, Math.min(1, power));
   updatePreview();
+  updatePowerMeter();
   const deg = Math.round((state.aimAngle * 180) / Math.PI);
   const pct = Math.round(state.aimPower * 100);
-  setAimReadout(`Angle ${deg}° · Power ${pct}% — release to launch`);
+  const prediction = {
+    collect: ' · Predicted: target hit',
+    crash: ' · Predicted: crash!',
+    lost: ' · Predicted: flies out',
+    none: ' · Predicted: runs out of steam',
+  }[state.previewOutcome] || '';
+  const fine = state.fineAim ? ' · FINE AIM' : '';
+  setAimReadout(`Angle ${deg}° · Power ${pct}%${fine}${prediction} — release to launch`);
 }
+
+const dotGold = new THREE.Color(0xffd166);
+const dotDim = new THREE.Color(0x3b2d6e);
+const dotColor = new THREE.Color();
 
 function updatePreview() {
   const level = levelById(state.levelId);
   if (state.phase !== 'aim' || !level) {
     previewLine.visible = false;
+    previewDots.visible = false;
+    previewEndRing.visible = false;
+    state.previewOutcome = 'none';
+    state.previewEnd = null;
     return;
   }
-  const sim = simulateLaunch(level, state.aimAngle, state.aimPower, state.collected, { record: true });
+  const sim = previewShot(level, state.aimAngle, state.aimPower, state.collected);
+  const outcome = sim.outcome === 'collected' || sim.outcome === 'partial' ? 'collect'
+    : sim.outcome === 'crash' ? 'crash'
+    : 'lost';
+  state.previewOutcome = outcome;
+  state.previewEnd = sim.end;
+
+  // Faint gold line for continuity.
   const pts = sim.points.slice(0, PREVIEW_MAX);
   for (let i = 0; i < pts.length; i++) {
     previewPositions[i * 3] = pts[i][0];
@@ -512,6 +602,30 @@ function updatePreview() {
   previewGeo.setDrawRange(0, pts.length);
   previewGeo.attributes.position.needsUpdate = true;
   previewLine.visible = pts.length > 1;
+
+  // Fading dots sampled along the path: bright gold near the comet,
+  // dimming toward indigo at the far end.
+  const step = Math.max(1, Math.floor(pts.length / PREVIEW_DOTS));
+  let n = 0;
+  for (let i = 0; i < pts.length && n < PREVIEW_DOTS; i += step, n++) {
+    dotPositions[n * 3] = pts[i][0];
+    dotPositions[n * 3 + 1] = pts[i][1];
+    dotPositions[n * 3 + 2] = 0;
+    const f = pts.length > 1 ? i / (pts.length - 1) : 0;
+    dotColor.lerpColors(dotGold, dotDim, f);
+    dotColors[n * 3] = dotColor.r;
+    dotColors[n * 3 + 1] = dotColor.g;
+    dotColors[n * 3 + 2] = dotColor.b;
+  }
+  dotGeo.setDrawRange(0, n);
+  dotGeo.attributes.position.needsUpdate = true;
+  dotGeo.attributes.color.needsUpdate = true;
+  previewDots.visible = n > 1;
+
+  // Predicted-end marker, coloured by outcome, pulsing at the end point.
+  previewEndRing.position.set(sim.end.x, sim.end.y, 0);
+  previewEndRing.material.color.setHex(PREVIEW_END_COLORS[outcome]);
+  previewEndRing.visible = true;
 }
 
 function updateTrailLine() {
@@ -563,6 +677,10 @@ function launch() {
   flightEnding = false;
   state.phase = 'fly';
   previewLine.visible = false;
+  previewDots.visible = false;
+  previewEndRing.visible = false;
+  trailLine.visible = false;
+  updatePowerMeter();
   hideAimReadout();
   feedback('launch', level.pad.x, level.pad.y);
   spawnBurst(level.pad.x, level.pad.y, 0, 0x22d3ee, 14, 5, 0.5);
@@ -635,7 +753,10 @@ function quitToMenu() {
   state.phase = 'menu';
   comet.visible = false;
   previewLine.visible = false;
+  previewDots.visible = false;
+  previewEndRing.visible = false;
   trailLine.visible = false;
+  updatePowerMeter();
   hideAimReadout();
   $('hud').classList.add('hidden');
   renderLevelSelect();
@@ -653,7 +774,7 @@ function resumeGame() {
   if (state.phase !== 'paused') return;
   state.phase = state.phaseBeforePause;
   showOnly(null);
-  if (state.phase === 'aim') setAimReadout(`Angle ${Math.round((state.aimAngle * 180) / Math.PI)}° · Power ${Math.round(state.aimPower * 100)}% — release to launch`);
+  if (state.phase === 'aim') setAim(state.aimAngle, state.aimPower);
 }
 
 // ---------------------------------------------------------------- flight stepping
@@ -708,6 +829,7 @@ const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 const ndc = new THREE.Vector2();
 let dragging = false;
 let lastDragDist = 0; // world units pulled; a plain click must not launch
+let dragStartDist = 0; // pull distance when the drag began (fine-aim anchor)
 
 function worldFromEvent(e) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -728,8 +850,14 @@ function aimFromPointer(e) {
   const dist = Math.hypot(dx, dy);
   lastDragDist = dist;
   if (dist < 0.4) return;
+  // Fine aim: hold Shift and the pull distance moves 4x slower around the
+  // point where the drag started, for small power tweaks.
+  state.fineAim = !!e.shiftKey;
+  const effDist = state.fineAim
+    ? dragStartDist + (dist - dragStartDist) * FINE_AIM_SCALE
+    : dist;
   const angle = Math.atan2(-dy, -dx);
-  const power = Math.max(0.05, Math.min(1, dist / MAX_DRAG));
+  const power = Math.max(0.05, Math.min(1, effDist / MAX_DRAG));
   setAim(angle, power);
 }
 
@@ -738,6 +866,9 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   ensureAudio();
   dragging = true;
   renderer.domElement.setPointerCapture(e.pointerId);
+  const level = levelById(state.levelId);
+  const p = worldFromEvent(e);
+  dragStartDist = p ? Math.hypot(p.x - level.pad.x, p.y - level.pad.y) : 0;
   aimFromPointer(e);
 });
 renderer.domElement.addEventListener('pointermove', (e) => {
@@ -747,6 +878,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (!dragging) return;
   dragging = false;
+  state.fineAim = false;
   if (state.phase !== 'aim') return;
   aimFromPointer(e);
   if (lastDragDist >= 1.5 && state.aimPower >= 0.08) launch();
@@ -769,10 +901,13 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (state.phase !== 'aim') return;
-  if (e.key === 'ArrowLeft') { setAim(state.aimAngle + 0.06, state.aimPower); e.preventDefault(); }
-  else if (e.key === 'ArrowRight') { setAim(state.aimAngle - 0.06, state.aimPower); e.preventDefault(); }
-  else if (e.key === 'ArrowUp') { setAim(state.aimAngle, state.aimPower + 0.05); e.preventDefault(); }
-  else if (e.key === 'ArrowDown') { setAim(state.aimAngle, state.aimPower - 0.05); e.preventDefault(); }
+  // Shift = fine aim: quarter-size angle/power steps for keyboard aim too.
+  state.fineAim = !!e.shiftKey;
+  const fine = e.shiftKey ? 0.25 : 1;
+  if (e.key === 'ArrowLeft') { setAim(state.aimAngle + 0.06 * fine, state.aimPower); e.preventDefault(); }
+  else if (e.key === 'ArrowRight') { setAim(state.aimAngle - 0.06 * fine, state.aimPower); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { setAim(state.aimAngle, state.aimPower + 0.05 * fine); e.preventDefault(); }
+  else if (e.key === 'ArrowDown') { setAim(state.aimAngle, state.aimPower - 0.05 * fine); e.preventDefault(); }
   else if (e.key === ' ') { launch(); e.preventDefault(); }
 });
 
@@ -884,6 +1019,11 @@ function animate(now) {
     0,
   );
   camera.lookAt(0, 0, 0);
+  // Predicted-end marker pulses while aiming so the predicted outcome reads.
+  if (previewEndRing.visible) {
+    const s = 1 + 0.18 * Math.sin(t * 6);
+    previewEndRing.scale.setScalar(s);
+  }
   if (!stopped) {
     updateParticles(dt);
     const level = levelById(state.levelId);

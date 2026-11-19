@@ -25,6 +25,7 @@
     <span id="hud-stars" class="hud-stars"></span>
   </div>
   <div class="hud-mid">
+    <span id="hud-par">Par 2</span>
     <span id="hud-shots">Shots 0/2</span>
     <span id="hud-targets">Targets 1 left</span>
   </div>
@@ -34,13 +35,17 @@
   </div>
 </div>
 <div id="aim-readout" class="hidden">Drag back from the comet to aim — release to launch</div>
+<div id="power-meter" class="power-meter hidden" aria-label="Shot power">
+  <div id="power-fill"></div>
+  <span id="power-label">Power 60%</span>
+</div>
 
 <!-- Main menu -->
 <div id="menu" class="overlay">
   <div class="panel">
     <h1>NEON ORBIT</h1>
     <p class="tagline">Slingshot your comet around planets. Collect every star.</p>
-    <p class="version">v0.1.0 &middot; Three.js 0.160.0</p>
+    <p class="version">v0.2.0 &middot; Three.js 0.160.0</p>
     <button id="btn-play" class="btn primary" type="button">Play</button>
     <button id="btn-howto" class="btn" type="button">How to Play</button>
     <div id="level-select" class="level-select" aria-label="Level select"></div>
@@ -63,6 +68,7 @@
     <h3>Controls</h3>
     <ul class="howto-list">
       <li>Mouse / touch: drag to aim, release to launch</li>
+      <li>Hold <strong>Shift</strong> while aiming for fine adjustments (or Shift + arrow keys)</li>
       <li>Arrow keys: adjust angle and power &middot; Space: launch</li>
       <li>R: retry level &middot; P: pause &middot; M: mute</li>
     </ul>

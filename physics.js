@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -77,6 +77,12 @@ export function starsForShots(shotsUsed, par) {
   if (shotsUsed === par + 1) return 2;
   if (shotsUsed <= par + 2) return 1;
   return 0;
+}
+
+// Star thresholds for a level's par, for level cards and the HUD:
+// 3 stars at par or fewer, 2 stars at par+1, 1 star at par+2 (the budget).
+export function starThresholds(par) {
+  return { three: par, two: par + 1, one: par + 2 };
 }
 
 export function isLevelComplete(level, collected) {
@@ -228,6 +234,23 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
   return {
     outcome, collected: gained, points, steps,
     time: state.t, end: { x: state.x, y: state.y },
+  };
+}
+
+// Predict one launch for the trajectory preview. Returns the sampled
+// trajectory points plus the predicted outcome and end position, so the
+// preview can show fading dots and a coloured end marker (gold = target
+// hit, red = crash into a planet, cyan = flies out / runs out of steam).
+// `outcome` here is the simulateLaunch outcome: 'collected' | 'partial' |
+// 'crash' | 'lost' | 'timeout' | 'none'.
+export function previewShot(level, angle, power, alreadyCollected = []) {
+  const sim = simulateLaunch(level, angle, power, alreadyCollected, { record: true });
+  return {
+    points: sim.points,
+    outcome: sim.outcome,
+    collected: sim.collected,
+    end: sim.end,
+    time: sim.time,
   };
 }
 
