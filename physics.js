@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.10.0';
+export const VERSION = '0.11.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -531,10 +531,16 @@ export function targetHits(target) {
 }
 
 export function launchState(level, angle, power, t0 = 0, shieldHits = {}) {
-  const speed = Math.max(0, Math.min(1, power)) * MAX_SPEED;
+  // A non-finite angle or power (bad input, a corrupted save) must never
+  // seed NaN into the flight: NaN falls back to a still comet, while an
+  // out-of-range power (±Infinity) clamps to the 0..1 range.
+  const a = Number.isFinite(angle) ? angle : 0;
+  const p = (typeof power === 'number' && !Number.isNaN(power))
+    ? Math.max(0, Math.min(1, power)) : 0;
+  const speed = p * MAX_SPEED;
   return {
     x: level.pad.x, y: level.pad.y,
-    vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+    vx: Math.cos(a) * speed, vy: Math.sin(a) * speed,
     t: 0, t0, done: false,
     slingshotPlanets: [], // planet indices already credited this shot
     // Shield state at launch: target index -> hits remaining. Copied so a
@@ -584,6 +590,15 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
   state.x += state.vx * dt;
   state.y += state.vy * dt;
   state.t += dt;
+
+  // NaN guard (Block 11, #47): a non-finite position or velocity (bad
+  // input, a corrupted level) ends the shot as 'invalid' instead of
+  // poisoning every later check — NaN comparisons never fire, so without
+  // this a corrupted comet would fly forever and never resolve.
+  if (![state.x, state.y, state.vx, state.vy].every(Number.isFinite)) {
+    state.done = true;
+    return { type: 'invalid', targets: newlyCollected.slice() };
+  }
 
   // Portal teleport: entering one portal exits its twin with the entry
   // velocity unchanged, placed just outside the twin's trigger radius
@@ -730,6 +745,7 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
   const allCollected = level.targets.length > 0 && isLevelComplete(level, collected);
   let outcome;
   if (allCollected) outcome = 'collected';
+  else if (lastEvent && lastEvent.type === 'invalid') outcome = 'invalid';
   else if (lastEvent && lastEvent.type === 'crash') outcome = 'crash';
   else if (lastEvent && lastEvent.type === 'swallowed') outcome = 'swallowed';
   else if (lastEvent && lastEvent.type === 'timeout') outcome = 'timeout';
@@ -751,7 +767,7 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
 // hit, red = crash into a planet / swallowed by a black hole, cyan = flies
 // out / runs out of steam).
 // `outcome` here is the simulateLaunch outcome: 'collected' | 'partial' |
-// 'crash' | 'swallowed' | 'lost' | 'timeout' | 'none'.
+// 'crash' | 'swallowed' | 'lost' | 'timeout' | 'invalid' | 'none'.
 // `t0` is the level time at launch — moving-planet previews depend on it.
 export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0, shieldHits = {}) {
   const sim = simulateLaunch(level, angle, power, alreadyCollected, { record: true, t0, shieldHits });

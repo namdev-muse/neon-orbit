@@ -1,4 +1,4 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.10.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.11.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
@@ -15,7 +15,7 @@ import {
   clampZoom, isTapGesture, focusStep,
 } from './physics.js';
 
-export const VERSION = '0.10.0';
+export const VERSION = '0.11.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -1140,6 +1140,82 @@ let previewRefresh = 0; // throttle for re-previewing while planets move
 let lastTimerSecond = -1; // last whole second shown on the Time Attack clock
 const tmpNewly = [];
 
+// ---------------------------------------------------------------- state audit (Block 11, #47)
+// Once a second, while a level is running, validate the live simulation
+// state: the level clock, the flight, the comet mesh, and the shot
+// counters. A corrupted value (NaN from bad input, a runaway counter)
+// is recovered on the spot — a lost shot, or a level restart — instead
+// of freezing the game or crashing the tab. The audit never throws:
+// a failure inside the audit itself is counted, not propagated.
+let auditChecks = 0;
+let auditFailures = 0;
+let auditRecoveries = 0;
+let lastAuditFailure = null;
+
+function auditFailureReason() {
+  const level = levelById(state.levelId);
+  if (!level) return null;
+  if (!Number.isFinite(levelTime)) return 'levelTime is not finite';
+  if (!Number.isInteger(state.shotsUsed) || state.shotsUsed < 0 || state.shotsUsed > shotBudget(level)) {
+    return 'shotsUsed out of range';
+  }
+  if (!Number.isInteger(state.shotsLeft) || state.shotsLeft < 0 || state.shotsLeft > shotBudget(level)) {
+    return 'shotsLeft out of range';
+  }
+  if (!Number.isInteger(state.targetsRemaining) || state.targetsRemaining < 0 || state.targetsRemaining > level.targets.length) {
+    return 'targetsRemaining out of range';
+  }
+  if (!['aim', 'fly', 'complete', 'failed', 'paused', 'menu', 'howto'].includes(state.phase)) {
+    return 'unknown phase';
+  }
+  if (flight) {
+    if (![flight.x, flight.y, flight.vx, flight.vy, flight.t].every(Number.isFinite)) {
+      return 'flight state is not finite';
+    }
+    if (Math.abs(flight.x) > 1e6 || Math.abs(flight.y) > 1e6) {
+      return 'flight position out of range';
+    }
+  }
+  if (![comet.position.x, comet.position.y, comet.position.z].every(Number.isFinite)) {
+    return 'comet position is not finite';
+  }
+  return null;
+}
+
+function recoverFromAudit(reason) {
+  auditRecoveries++;
+  lastAuditFailure = reason;
+  // A corrupt flight mid-shot is a lost shot: end it cleanly so the
+  // player re-aims instead of watching a frozen comet.
+  if (state.phase === 'fly' && flight) {
+    flightEnding = true;
+    flight = null;
+    comet.visible = false;
+    trailHistory = [];
+    updateTrailLine();
+    scheduleEndShot(300);
+    return;
+  }
+  // Anything else (bad clock, bad counters, bad comet) restarts the
+  // level — the attempt is lost but the game stays playable.
+  if (state.phase === 'aim' || state.phase === 'fly') {
+    restartCurrent();
+    return;
+  }
+  if (!Number.isFinite(levelTime)) levelTime = 0;
+}
+
+function runStateAudit() {
+  if (state.phase !== 'aim' && state.phase !== 'fly') return;
+  auditChecks++;
+  let reason = null;
+  try { reason = auditFailureReason(); } catch (err) { reason = `audit threw: ${err.message}`; }
+  if (!reason) return;
+  auditFailures++;
+  console.warn(`[audit] ${reason} — recovering`);
+  try { recoverFromAudit(reason); } catch (err) { console.warn(`[audit] recovery threw: ${err.message}`); }
+}
+
 function beginLevel(level, mode) {
   if (!level) return;
   window.clearTimeout(shotTimer);
@@ -1538,7 +1614,7 @@ function stepFlightLoop(dt) {
         scheduleEndShot(700);
         break;
       }
-    } else if (ev && (ev.type === 'crash' || ev.type === 'lost' || ev.type === 'timeout' || ev.type === 'swallowed')) {
+    } else if (ev && (ev.type === 'crash' || ev.type === 'lost' || ev.type === 'timeout' || ev.type === 'swallowed' || ev.type === 'invalid')) {
       flightEnding = true;
       if (ev.type === 'crash') {
         feedback('crash', flight.x, flight.y);
@@ -1547,6 +1623,9 @@ function stepFlightLoop(dt) {
         feedback('swallowed', flight.x, flight.y);
         comet.visible = false;
       } else {
+        // 'lost' and 'timeout' fly out or run out of steam; 'invalid' is
+        // a corrupted flight the physics guard ended — same lost-shot
+        // feel, no extra drama for a state that should never show.
         feedback('lost', flight.x, flight.y);
         comet.visible = false;
       }
@@ -2133,6 +2212,23 @@ window.__orbit = {
     bounceCount,
     shieldHitCount,
   }),
+  // State audit (Block 11, #47): how many 1s checks ran, how many
+  // failures were found, how many recoveries ran, and the last reason.
+  auditState: () => ({
+    checks: auditChecks,
+    failures: auditFailures,
+    recoveries: auditRecoveries,
+    lastFailure: lastAuditFailure,
+  }),
+  // Test-only corruption hook for the render check: 'flight' NaNs the
+  // live flight state (the physics guard must end the shot cleanly),
+  // 'time' NaNs the level clock (only the 1s audit can catch it).
+  // Returns false when there is nothing to corrupt.
+  testCorrupt: (what) => {
+    if (what === 'flight' && flight) { flight.x = NaN; return true; }
+    if (what === 'time') { levelTime = NaN; return true; }
+    return false;
+  },
   newGame: () => {
     save = defaultSave();
     persistSave();
@@ -2165,4 +2261,7 @@ if (!save.seenHowTo) {
 } else {
   showOnly('menu');
 }
+// The state audit (Block 11, #47) runs once a second for the whole
+// session; it only acts while a level is running.
+window.setInterval(runStateAudit, 1000);
 requestAnimationFrame(animate);
