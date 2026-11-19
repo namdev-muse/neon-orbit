@@ -1,15 +1,16 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.2.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.3.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
 import {
   LEVELS, PLAYFIELD_RADIUS, SUBSTEP,
   levelById, shotBudget, starsForShots, starThresholds, isLevelComplete,
-  generateDecor, launchState, stepFlight, previewShot,
+  generateDecor, launchState, stepFlight, previewShot, planetPosAt,
+  levelHasMovingPlanets, levelBlackHoles,
   defaultSave, serializeSave, parseSave, totalStars,
 } from './physics.js';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -144,6 +145,10 @@ const sfx = {
     noiseBurst(0.3, 0.22, 500);
   },
   lost() { tone(320, 0.4, 'sine', 0.1, 140); },
+  swallow() {
+    tone(320, 0.5, 'sine', 0.2, 40);
+    noiseBurst(0.3, 0.1, 400);
+  },
   win() {
     [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.22, 'sine', 0.15, null, i * 0.09));
   },
@@ -224,6 +229,16 @@ const planetRingMat = new THREE.MeshBasicMaterial({ color: 0x8b5cf6, transparent
 const cometMat = new THREE.MeshStandardMaterial({
   color: 0x22d3ee, emissive: 0x22d3ee, emissiveIntensity: 1.4, roughness: 0.25, metalness: 0.1,
 });
+// Black hole materials: a light-swallowing core, a hot accretion disc and
+// a thin gold photon ring so the hole reads on the dark background.
+const bhGeo = new THREE.SphereGeometry(1, 32, 24);
+const bhMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+const bhDiscGeo = new THREE.TorusGeometry(1, 0.14, 8, 64);
+const bhDiscMat = new THREE.MeshBasicMaterial({
+  color: 0xff8c1a, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false,
+});
+const bhRingGeo = new THREE.TorusGeometry(1, 0.035, 8, 64);
+const bhRingMat = new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9 });
 
 // Playfield disc + boundary ring.
 const disc = new THREE.Mesh(
@@ -256,8 +271,10 @@ scene.add(boundary);
 const levelGroup = new THREE.Group();
 scene.add(levelGroup);
 let planetMeshes = [];
+let planetRings = [];
 let targetMeshes = [];
 let targetRings = [];
+let blackHoleMeshes = []; // { disc, ring } per black hole (disc spins)
 
 // Comet + its glow light.
 const comet = new THREE.Mesh(cometGeo, cometMat);
@@ -305,6 +322,7 @@ scene.add(previewEndRing);
 const PREVIEW_END_COLORS = {
   collect: 0xffd166,
   crash: 0xff3b30,
+  swallowed: 0xff3b30,
   lost: 0x22d3ee,
   none: 0x22d3ee,
 };
@@ -406,6 +424,11 @@ function feedback(kind, x, y) {
     addTrauma(0.15);
     sfx.lost();
     spawnBurst(x, y, 0, 0x22d3ee, 16, 5, 0.6);
+  } else if (kind === 'swallowed') {
+    addTrauma(0.6);
+    hitStop(0.08);
+    sfx.swallow();
+    spawnBurst(x, y, 0, 0xa855f7, 36, 8, 0.9);
   } else if (kind === 'win') {
     addTrauma(0.3);
     sfx.win();
@@ -507,8 +530,10 @@ function renderLevelSelect() {
 function buildLevelMeshes(level) {
   while (levelGroup.children.length) levelGroup.remove(levelGroup.children[0]);
   planetMeshes = [];
+  planetRings = [];
   targetMeshes = [];
   targetRings = [];
+  blackHoleMeshes = [];
   for (const p of level.planets) {
     const mat = new THREE.MeshStandardMaterial({
       color: p.color, emissive: p.color, emissiveIntensity: 0.55,
@@ -525,6 +550,44 @@ function buildLevelMeshes(level) {
     ring.rotation.x = Math.PI / 2.6;
     ring.rotation.y = 0.3;
     levelGroup.add(ring);
+    planetRings.push(ring);
+    // Moving planets show their orbit path so the player can time a launch.
+    if (p.orbit) {
+      const o = p.orbit;
+      const pts = [];
+      for (let i = 0; i <= 96; i++) {
+        const a = (i / 96) * Math.PI * 2;
+        pts.push(new THREE.Vector3(o.cx + o.radius * Math.cos(a), o.cy + o.radius * Math.sin(a), -0.4));
+      }
+      const pathGeo = new THREE.BufferGeometry().setFromPoints(pts);
+      const path = new THREE.Line(pathGeo, new THREE.LineBasicMaterial({
+        color: 0x8b5cf6, transparent: true, opacity: 0.28,
+      }));
+      levelGroup.add(path);
+    }
+  }
+  // Black holes: black core, spinning orange accretion disc (tilted),
+  // thin gold photon ring, and a warm point light.
+  for (const bh of levelBlackHoles(level)) {
+    const group = new THREE.Group();
+    group.position.set(bh.x, bh.y, 0);
+    const core = new THREE.Mesh(bhGeo, bhMat);
+    core.scale.setScalar(bh.r);
+    group.add(core);
+    const tilt = new THREE.Group();
+    tilt.rotation.x = Math.PI / 2.6;
+    tilt.rotation.y = 0.35;
+    const disc = new THREE.Mesh(bhDiscGeo, bhDiscMat);
+    disc.scale.setScalar(bh.r * 1.9);
+    tilt.add(disc);
+    group.add(tilt);
+    const ring = new THREE.Mesh(bhRingGeo, bhRingMat);
+    ring.scale.setScalar(bh.r * 1.15);
+    group.add(ring);
+    const light = new THREE.PointLight(0xff8c1a, 8, 14, 2);
+    group.add(light);
+    levelGroup.add(group);
+    blackHoleMeshes.push({ disc, ring });
   }
   level.targets.forEach((t, i) => {
     const m = new THREE.Mesh(targetGeo, targetMat);
@@ -564,6 +627,7 @@ function setAim(angle, power) {
   const prediction = {
     collect: ' · Predicted: target hit',
     crash: ' · Predicted: crash!',
+    swallowed: ' · Predicted: swallowed!',
     lost: ' · Predicted: flies out',
     none: ' · Predicted: runs out of steam',
   }[state.previewOutcome] || '';
@@ -585,9 +649,11 @@ function updatePreview() {
     state.previewEnd = null;
     return;
   }
-  const sim = previewShot(level, state.aimAngle, state.aimPower, state.collected);
+  // Preview follows the level clock: moving planets shift the shot.
+  const sim = previewShot(level, state.aimAngle, state.aimPower, state.collected, levelTime);
   const outcome = sim.outcome === 'collected' || sim.outcome === 'partial' ? 'collect'
     : sim.outcome === 'crash' ? 'crash'
+    : sim.outcome === 'swallowed' ? 'swallowed'
     : 'lost';
   state.previewOutcome = outcome;
   state.previewEnd = sim.end;
@@ -643,6 +709,8 @@ let flight = null;
 let flightAcc = 0;
 let flightEnding = false;
 let shotTimer = 0;
+let levelTime = 0; // seconds since the level started; moving planets follow it
+let previewRefresh = 0; // throttle for re-previewing while planets move
 const tmpNewly = [];
 
 function startLevel(id) {
@@ -657,6 +725,8 @@ function startLevel(id) {
   state.targetsRemaining = level.targets.length;
   flight = null;
   flightEnding = false;
+  levelTime = 0;
+  previewRefresh = 0;
   buildLevelMeshes(level);
   resetCometToPad();
   state.phase = 'aim';
@@ -672,7 +742,7 @@ function startLevel(id) {
 function launch() {
   if (state.phase !== 'aim' || flightEnding) return;
   const level = levelById(state.levelId);
-  flight = launchState(level, state.aimAngle, state.aimPower);
+  flight = launchState(level, state.aimAngle, state.aimPower, levelTime);
   flightAcc = 0;
   flightEnding = false;
   state.phase = 'fly';
@@ -785,6 +855,7 @@ function stepFlightLoop(dt) {
   while (flightAcc >= SUBSTEP && flight && !flightEnding && guard < 12) {
     flightAcc -= SUBSTEP;
     guard++;
+    levelTime += SUBSTEP; // level clock stays in lockstep with flight time
     tmpNewly.length = 0;
     const level = levelById(state.levelId);
     const ev = stepFlight(flight, level, SUBSTEP, state.collected, tmpNewly);
@@ -805,10 +876,13 @@ function stepFlightLoop(dt) {
         scheduleEndShot(700);
         break;
       }
-    } else if (ev && (ev.type === 'crash' || ev.type === 'lost' || ev.type === 'timeout')) {
+    } else if (ev && (ev.type === 'crash' || ev.type === 'lost' || ev.type === 'timeout' || ev.type === 'swallowed')) {
       flightEnding = true;
       if (ev.type === 'crash') {
         feedback('crash', flight.x, flight.y);
+        comet.visible = false;
+      } else if (ev.type === 'swallowed') {
+        feedback('swallowed', flight.x, flight.y);
         comet.visible = false;
       } else {
         feedback('lost', flight.x, flight.y);
@@ -1001,6 +1075,21 @@ renderer.domElement.addEventListener('webglcontextrestored', () => {
   // Three.js restores GL resources; the player resumes from the pause menu.
 });
 
+// Moving planets follow the level clock; their meshes (and rings) are
+// repositioned every frame so what the player sees matches the physics.
+function updatePlanetMeshes() {
+  const level = levelById(state.levelId);
+  if (!level) return;
+  level.planets.forEach((p, i) => {
+    if (!p.orbit) return;
+    const pos = planetPosAt(p, levelTime);
+    const m = planetMeshes[i];
+    if (m) m.position.set(pos.x, pos.y, 0);
+    const r = planetRings[i];
+    if (r) r.position.set(pos.x, pos.y, 0);
+  });
+}
+
 // ---------------------------------------------------------------- main loop
 let lastNow = performance.now();
 
@@ -1028,6 +1117,26 @@ function animate(now) {
     updateParticles(dt);
     const level = levelById(state.levelId);
     if (level) {
+      // The level clock runs while aiming; during flight it advances in
+      // lockstep with the simulation inside stepFlightLoop.
+      if (state.phase === 'aim') {
+        levelTime += dt;
+        if (levelHasMovingPlanets(level)) {
+          previewRefresh += dt;
+          if (previewRefresh >= 0.15) {
+            previewRefresh = 0;
+            // Re-aim at the same angle/power: the preview and its readout
+            // follow the planets as they move.
+            setAim(state.aimAngle, state.aimPower);
+          }
+        }
+      }
+      updatePlanetMeshes();
+      // Black hole accretion discs swirl; photon rings counter-rotate.
+      for (const bh of blackHoleMeshes) {
+        bh.disc.rotation.z += dt * 0.9;
+        bh.ring.rotation.z -= dt * 0.4;
+      }
       targetMeshes.forEach((m, i) => {
         if (!m.visible) return;
         const r = level.targets[i].r;
@@ -1061,6 +1170,15 @@ window.__orbit = {
   selectLevel: (id) => { ensureAudio(); startLevel(id); },
   aim: (angle, power) => { if (state.phase === 'aim') setAim(angle, power); },
   launch: () => launch(),
+  info: () => {
+    const level = levelById(state.levelId);
+    return {
+      levelTime,
+      blackHoles: level ? levelBlackHoles(level).length : 0,
+      movingPlanets: level ? level.planets.filter((p) => p.orbit).length : 0,
+      planetPositions: planetMeshes.map((m) => [m.position.x, m.position.y]),
+    };
+  },
   newGame: () => {
     save = defaultSave();
     persistSave();

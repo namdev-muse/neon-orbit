@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -61,6 +61,26 @@ export const LEVELS = [
     ],
     targets: [{ x: 15, y: 7, r: 1.6 }, { x: 16, y: -6, r: 1.6 }, { x: 6, y: 10, r: 1.6 }],
   },
+  {
+    id: 7, name: 'Event Horizon', par: 3,
+    hint: 'A black hole guards the target — it pulls hard and swallows comets. Arc over the top and let the planet bend you home.',
+    pad: { x: -14, y: 0 },
+    planets: [{ x: -2, y: 8, r: 2, mu: 140, color: 0x7c3aed }],
+    blackHoles: [{ x: 2, y: 0, r: 1.6, mu: 300 }],
+    targets: [{ x: 13, y: 0, r: 1.6 }],
+  },
+  {
+    id: 8, name: 'Carousel', par: 4,
+    hint: 'The planet never sits still — it orbits the centre. Time your launch for when the bend lines up.',
+    pad: { x: -15, y: 0 },
+    planets: [
+      {
+        x: 7, y: 0, r: 2, mu: 150, color: 0x8b5cf6,
+        orbit: { cx: 0, cy: 0, radius: 7, speed: 0.45, phase: 0 },
+      },
+    ],
+    targets: [{ x: 12, y: 7, r: 1.6 }, { x: 13, y: -7, r: 1.6 }],
+  },
 ];
 
 export function levelById(id) {
@@ -119,23 +139,52 @@ export function generateDecor(seed, count, radius) {
 }
 
 // ---------------------------------------------------------------- flight
-export function launchState(level, angle, power) {
+// Planet position at level time t. Static planets sit at (p.x, p.y);
+// a planet with `orbit` travels a circle around (cx, cy) at `speed`
+// rad/s from `phase`. (p.x, p.y) is its position at t = 0.
+export function planetPosAt(p, t) {
+  if (!p.orbit) return { x: p.x, y: p.y };
+  const o = p.orbit;
+  const a = o.phase + o.speed * t;
+  return { x: o.cx + o.radius * Math.cos(a), y: o.cy + o.radius * Math.sin(a) };
+}
+
+export function levelHasMovingPlanets(level) {
+  return (level.planets || []).some((p) => !!p.orbit);
+}
+
+export function levelBlackHoles(level) {
+  return level.blackHoles || [];
+}
+
+export function launchState(level, angle, power, t0 = 0) {
   const speed = Math.max(0, Math.min(1, power)) * MAX_SPEED;
   return {
     x: level.pad.x, y: level.pad.y,
     vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-    t: 0, done: false,
+    t: 0, t0, done: false,
   };
 }
 
-function gravityAt(x, y, level) {
+function gravityAt(x, y, level, t) {
   let ax = 0, ay = 0;
   for (const p of level.planets) {
-    const dx = p.x - x, dy = p.y - y;
+    const pos = planetPosAt(p, t);
+    const dx = pos.x - x, dy = pos.y - y;
     const d2 = dx * dx + dy * dy;
     const soft = p.r * GRAVITY_SOFTEN;
     const denom = Math.pow(d2 + soft * soft, 1.5);
     const s = p.mu / denom;
+    ax += dx * s;
+    ay += dy * s;
+  }
+  // Black holes pull with the same softened law, only much stronger.
+  for (const bh of levelBlackHoles(level)) {
+    const dx = bh.x - x, dy = bh.y - y;
+    const d2 = dx * dx + dy * dy;
+    const soft = bh.r * GRAVITY_SOFTEN;
+    const denom = Math.pow(d2 + soft * soft, 1.5);
+    const s = bh.mu / denom;
     ax += dx * s;
     ay += dy * s;
   }
@@ -147,16 +196,27 @@ function gravityAt(x, y, level) {
 // newly collected indices are appended to `newlyCollected`.
 export function stepFlight(state, level, dt, collected, newlyCollected) {
   if (state.done) return null;
-  const { ax, ay } = gravityAt(state.x, state.y, level);
+  const t = (state.t0 || 0) + state.t; // planet positions follow level time
+  const { ax, ay } = gravityAt(state.x, state.y, level, t);
   state.vx += ax * dt;
   state.vy += ay * dt;
   state.x += state.vx * dt;
   state.y += state.vy * dt;
   state.t += dt;
 
-  // Planet crash (bounding-circle check).
+  // Black hole swallow (event horizon): the comet is gone, shot lost.
+  for (const bh of levelBlackHoles(level)) {
+    const dx = state.x - bh.x, dy = state.y - bh.y;
+    const rr = bh.r + COMET_RADIUS;
+    if (dx * dx + dy * dy < rr * rr) {
+      state.done = true;
+      return { type: 'swallowed', targets: [] };
+    }
+  }
+  // Planet crash (bounding-circle check, at the planet's current position).
   for (const p of level.planets) {
-    const dx = state.x - p.x, dy = state.y - p.y;
+    const pos = planetPosAt(p, t);
+    const dx = state.x - pos.x, dy = state.y - pos.y;
     const rr = p.r + COMET_RADIUS;
     if (dx * dx + dy * dy < rr * rr) {
       state.done = true;
@@ -192,11 +252,12 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
 // Simulate one full launch. Pure: does not mutate the level.
 // Returns { outcome, collected, points, steps, time, end }.
 // outcome: 'collected' (all targets gone) | 'partial' (some collected, shot ended)
-//          | 'crash' | 'lost' | 'timeout' | 'none' (flew and ended with nothing)
+//          | 'crash' | 'swallowed' | 'lost' | 'timeout' | 'none' (flew and ended with nothing)
+// opts.t0: level time at launch — matters for moving planets.
 export function simulateLaunch(level, angle, power, alreadyCollected = [], opts = {}) {
   const record = opts.record !== false;
   const collected = alreadyCollected.slice();
-  const state = launchState(level, angle, power);
+  const state = launchState(level, angle, power, opts.t0 || 0);
   const points = record ? [[state.x, state.y]] : [];
   let steps = 0;
   let lastEvent = null;
@@ -226,6 +287,7 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
   let outcome;
   if (allCollected) outcome = 'collected';
   else if (lastEvent && lastEvent.type === 'crash') outcome = 'crash';
+  else if (lastEvent && lastEvent.type === 'swallowed') outcome = 'swallowed';
   else if (lastEvent && lastEvent.type === 'timeout') outcome = 'timeout';
   else if (gained.length > 0) outcome = 'partial';
   else if (lastEvent && lastEvent.type === 'lost') outcome = 'lost';
@@ -240,11 +302,13 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
 // Predict one launch for the trajectory preview. Returns the sampled
 // trajectory points plus the predicted outcome and end position, so the
 // preview can show fading dots and a coloured end marker (gold = target
-// hit, red = crash into a planet, cyan = flies out / runs out of steam).
+// hit, red = crash into a planet / swallowed by a black hole, cyan = flies
+// out / runs out of steam).
 // `outcome` here is the simulateLaunch outcome: 'collected' | 'partial' |
-// 'crash' | 'lost' | 'timeout' | 'none'.
-export function previewShot(level, angle, power, alreadyCollected = []) {
-  const sim = simulateLaunch(level, angle, power, alreadyCollected, { record: true });
+// 'crash' | 'swallowed' | 'lost' | 'timeout' | 'none'.
+// `t0` is the level time at launch — moving-planet previews depend on it.
+export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0) {
+  const sim = simulateLaunch(level, angle, power, alreadyCollected, { record: true, t0 });
   return {
     points: sim.points,
     outcome: sim.outcome,
