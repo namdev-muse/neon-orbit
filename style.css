@@ -65,6 +65,7 @@ html, body {
 #hud-stars { color: var(--gold); letter-spacing: 2px; }
 #hud-par { color: var(--gold); font-weight: 700; }
 #hud-shots, #hud-targets { color: var(--text); }
+.hud-timer { color: var(--gold); font-weight: 800; font-variant-numeric: tabular-nums; text-shadow: 0 0 12px rgba(255, 209, 102, 0.7); }
 
 /* ---------- Shot power meter (shown while aiming) ---------- */
 .power-meter {

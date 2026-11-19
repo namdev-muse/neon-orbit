@@ -6,7 +6,7 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.9.0
+**Version:** v0.10.0
 
 ## How to play
 
@@ -27,6 +27,9 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 - **Moving planets** orbit a centre point (the faint ring shows the path).
   The trajectory preview follows them live, so time your launch for when
   the bend lines up.
+- **Moving targets** drift on small orbits (the faint ring shows the path).
+  The trajectory preview follows them live, so lead your shot — the comet
+  has to meet the target where it is, not where it was.
 - **Portals** come in matching pairs (cyan, gold, or violet) — fly into
   one and you exit its twin at the same speed, with a 0.6s cooldown so
   you can't hop straight back. **Shielded targets** (white ring) take
@@ -43,11 +46,11 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 - Beat par for **3 stars** (par+1 = 2 stars, within budget = 1 star).
   Finishing a level unlocks the next one. Each level card and the HUD show
   the par and the exact star thresholds. The menu's campaign map tracks
-  the whole run — a progress bar (levels cleared, stars out of 33) and a
+  the whole run — a progress bar (levels cleared, stars out of 36) and a
   gold **NEXT** ring on the next uncompleted level. **My Stats** lists
-  your best stars per level plus your daily best, endless run record, and
-  how many shared seeds you've played. Running out of shots shows the
-  attempt stats (shots used vs budget, par, banked best) with Retry,
+  your best stars per level plus your daily best, endless run record,
+  time attack best, and how many shared seeds you've played. Running out
+  of shots shows the attempt stats (shots used vs budget, par, banked best) with Retry,
   Level Select, and Main Menu.
 
 ## Daily, seeds & Endless
@@ -61,6 +64,11 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 - **Endless Orbit** deals a new generated level every round, one difficulty
   step harder each time, until you run out of shots. Retry replays the
   same round; finishing a round advances to the next.
+- **Time Attack** clears campaign levels 1–5 against one shared 4:00 clock.
+  Clearing a level banks its stars and advances; the run ends when the
+  clock hits zero, a level runs out of shots, or all five are cleared.
+  Your best full clear (most stars, then fastest) is saved, and the
+  music turns tense under 30 seconds.
 - Every generated level is verified solvable by the same auto-aim solver
   the bot harness uses before it is offered — a challenge mode never has
   an impossible level. Par comes from the solver's shot count.
@@ -70,16 +78,23 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 | # | Name | Planets | Targets | Par |
 |---|------|---------|---------|-----|
 | 1 | First Light | 1 | 1 | 2 |
-| 2 | Curveball | 1 | 1 | 3 |
+| 2 | Curveball | 1 | 1 | 2 |
 | 3 | Twin Suns | 2 | 2 | 3 |
-| 4 | The Long Way | 1 | 1 | 3 |
-| 5 | Heavyweight | 1 | 2 | 4 |
-| 6 | Gauntlet | 3 | 3 | 5 |
-| 7 | Event Horizon | 1 + 1 black hole | 1 | 3 |
-| 8 | Carousel | 1 moving | 2 | 4 |
+| 4 | The Long Way | 1 | 1 | 2 |
+| 5 | Heavyweight | 1 | 2 | 3 |
+| 6 | Gauntlet | 3 | 3 small | 3 |
+| 7 | Event Horizon | 1 + 1 black hole | 1 | 2 |
+| 8 | Carousel | 1 moving | 2 | 3 |
 | 9 | Portal Hop | 1 + 1 portal pair | 2 | 3 |
 | 10 | Shielded Stars | 2 | 2 shielded | 4 |
 | 11 | Bounce House | 1 + 1 bounce pad | 2 | 3 |
+| 12 | Moving Stars | 1 | 2 moving | 2 |
+
+Pars are tuned to the auto-aim solver: par is the solver's minimal shot
+count + 1 slack shot (minimum 2), except Shielded Stars, whose par 4 is
+its designed minimum (two hits per shielded target). Gauntlet's targets
+were spread out and shrunk in v0.10.0 after a single slow lob collected
+all three.
 
 ## Controls
 
@@ -100,6 +115,10 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
   same gravity law with a much larger mu and an event-horizon swallow
   radius; planets with an `orbit` travel a circle around a centre point on
   the level clock, and the preview / flight / visuals all read that clock.
+  Targets with an `orbit` drift the same way — the collect check reads
+  their position at the level time, so a shot must meet the target where
+  it is. The solver searches launch times on moving levels, so it plans
+  timed launches.
   Portals teleport the comet between twins (velocity preserved, 0.6s pair
   cooldown), bounce pads reflect velocity about the radial normal once per
   pad per shot, and shielded targets track remaining hits in the flight
@@ -133,7 +152,9 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
   chain; daily and per-seed bests persist in the save.
 - Best stars per level and settings persist in localStorage (`nor-stars`,
   `nor-settings`). The save also records the endless run record
-  (`endlessBest`: most rounds cleared in one run). The camera zoom
+  (`endlessBest`: most rounds cleared in one run) and the time attack
+  best (`timeAttackBest`: stars and seconds of the best full clear of
+  levels 1–5). The camera zoom
   persists in `nor-settings` too, and every overlay focuses its primary
   button so the whole game is playable from the keyboard alone.
 
@@ -148,9 +169,10 @@ python3 -m http.server 8123
 
 ```sh
 npm test            # smoke tests + bot harness
-node tests/smoke.js # physics / levels / save round-trip (281 checks)
-node tests/bot.js   # auto-aim solver plays all 11 levels + 3 generated
-                    # challenge levels to completion
+node tests/smoke.js # physics / levels / save round-trip (357 checks)
+node tests/bot.js   # auto-aim solver plays all 12 levels + 3 generated
+                    # challenge levels to completion, plus the 5-level
+                    # Time Attack set
 node tests/render-check.js  # headless Chromium: menu renders, a run starts,
                             # a launch moves the comet, zero console errors;
                             # tap-to-launch, keyboard-only play, camera zoom

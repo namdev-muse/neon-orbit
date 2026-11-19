@@ -1,20 +1,21 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.9.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.10.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
 import {
   LEVELS, PLAYFIELD_RADIUS, SUBSTEP,
   levelById, shotBudget, starsForShots, starThresholds, isLevelComplete,
-  generateDecor, launchState, stepFlight, previewShot, planetPosAt,
-  levelHasMovingPlanets, levelBlackHoles, levelPortals, levelBouncePads,
+  generateDecor, launchState, stepFlight, previewShot, planetPosAt, targetPosAt,
+  levelHasMovingPlanets, levelHasMovingTargets, levelBlackHoles, levelPortals, levelBouncePads,
   targetHits, FEEDBACK, isNearMiss,
   defaultSave, serializeSave, parseSave, totalStars,
   dateSeed, dateKey, dailyDifficulty, endlessDifficulty, parseSeedParam,
   generateLevel, registerGeneratedLevel, solveShot,
+  TIME_ATTACK_LEVEL_IDS, TIME_ATTACK_SECONDS, formatClock,
   clampZoom, isTapGesture, focusStep,
 } from './physics.js';
 
-export const VERSION = '0.9.0';
+export const VERSION = '0.10.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -27,7 +28,7 @@ const PARTICLE_MAX = 240;
 
 // ---------------------------------------------------------------- state
 // Challenge-mode ids: generated levels register under these ids and
-// never touch the campaign unlock chain (campaign levels are 1..8).
+// never touch the campaign unlock chain (campaign levels are 1..12).
 const DAILY_ID = 900;
 const SEED_ID = 901;
 const ENDLESS_ID = 902;
@@ -35,7 +36,7 @@ const ENDLESS_ID = 902;
 const state = {
   version: VERSION,
   phase: 'menu', // menu | howto | aim | fly | complete | failed | paused
-  mode: 'campaign', // campaign | daily | seed | endless
+  mode: 'campaign', // campaign | daily | seed | endless | timeattack
   levelId: 1,
   levelName: '',
   shotsUsed: 0,
@@ -60,6 +61,11 @@ const state = {
   endlessRound: 0,
   endlessBaseSeed: 0,
   dailyDate: '',
+  // Time Attack run state: one shared clock across levels 1-5, the stars
+  // banked so far, and how many of the five levels are cleared.
+  timeLeft: 0,
+  timeAttackIndex: 0,
+  timeAttackStars: 0,
 };
 
 function loadSave() {
@@ -270,9 +276,11 @@ const sfx = {
 
 // Music intensity: 0 = calm (bass layer only), 1 = mid (bass + arpeggio,
 // levels 3+), 2 = tense (adds a driving pulse on the last shot). The root
-// progression rotates by level so later levels sound different.
+// progression rotates by level so later levels sound different. A Time
+// Attack run under 30 seconds on the clock is tense too.
 function musicIntensity() {
   let intensity = state.levelId >= 3 ? 1 : 0;
+  if (state.mode === 'timeattack' && state.timeLeft <= 30) intensity = 2;
   if ((state.phase === 'aim' || state.phase === 'fly') && state.shotsLeft <= 1) intensity += 1;
   return Math.min(2, intensity);
 }
@@ -732,9 +740,13 @@ function updateHUD() {
   const level = levelById(state.levelId);
   const budget = level ? shotBudget(level) : 0;
   $('hud-level').textContent = level
-    ? (state.mode === 'campaign' ? `Level ${level.id} — ${level.name}` : level.name)
+    ? (state.mode === 'campaign' ? `Level ${level.id} — ${level.name}`
+      : state.mode === 'timeattack' ? `Time Attack ${state.timeAttackIndex + 1}/5 — ${level.name}`
+      : level.name)
     : '';
-  const best = state.mode === 'campaign'
+  // Time Attack levels show the campaign best for the level — the run's
+  // banked stars live on the complete screen, not in the per-level slot.
+  const best = state.mode === 'campaign' || state.mode === 'timeattack'
     ? (save.stars[state.levelId] || 0)
     : challengeBest(state.mode);
   $('hud-stars').textContent = '★'.repeat(best) + '☆'.repeat(3 - best);
@@ -743,6 +755,11 @@ function updateHUD() {
   $('hud-targets').textContent = state.targetsRemaining === 0
     ? 'All targets collected'
     : `Targets ${state.targetsRemaining} left`;
+  // The Time Attack clock lives in the HUD mid row, gold and bold; the
+  // animate loop refreshes its text once per second while the run ticks.
+  const timerEl = $('hud-timer');
+  timerEl.classList.toggle('hidden', state.mode !== 'timeattack');
+  if (state.mode === 'timeattack') timerEl.textContent = `⏱ ${formatClock(state.timeLeft)}`;
 }
 
 // Shot power meter (HUD, shown while aiming): fill width = launch power,
@@ -857,9 +874,11 @@ function renderStats() {
   const today = dateKey(new Date());
   const dailyBest = (save.daily && save.daily.date === today) ? save.daily.stars : 0;
   const seedCount = save.seedBest ? Object.keys(save.seedBest).length : 0;
+  const taBest = save.timeAttackBest;
   $('stats-challenge').textContent =
     `Daily best today: ${'★'.repeat(dailyBest)}${'☆'.repeat(3 - dailyBest)}` +
     ` · Endless best: ${save.endlessBest || 0} round${(save.endlessBest || 0) === 1 ? '' : 's'}` +
+    ` · Time Attack best: ${taBest ? `${taBest.stars}/15 stars in ${formatClock(taBest.seconds)}` : 'no full clear yet'}` +
     ` · ${seedCount} seed${seedCount === 1 ? '' : 's'} played`;
 }
 
@@ -981,6 +1000,20 @@ function buildLevelMeshes(level) {
     ring.position.set(t.x, t.y, 0);
     levelGroup.add(ring);
     targetRings.push(ring);
+    // Moving targets show their orbit path so the player can lead the shot.
+    if (t.orbit) {
+      const o = t.orbit;
+      const pts = [];
+      for (let i = 0; i <= 96; i++) {
+        const a = (i / 96) * Math.PI * 2;
+        pts.push(new THREE.Vector3(o.cx + o.radius * Math.cos(a), o.cy + o.radius * Math.sin(a), -0.4));
+      }
+      const pathGeo = new THREE.BufferGeometry().setFromPoints(pts);
+      const path = new THREE.Line(pathGeo, new THREE.LineBasicMaterial({
+        color: 0xff2d95, transparent: true, opacity: 0.28,
+      }));
+      levelGroup.add(path);
+    }
     // Shielded targets get a white shield ring that vanishes on the
     // cracking hit, so one hit left reads at a glance.
     if (targetHits(t) > 1) {
@@ -1104,6 +1137,7 @@ let flightEnding = false;
 let shotTimer = 0;
 let levelTime = 0; // seconds since the level started; moving planets follow it
 let previewRefresh = 0; // throttle for re-previewing while planets move
+let lastTimerSecond = -1; // last whole second shown on the Time Attack clock
 const tmpNewly = [];
 
 function beginLevel(level, mode) {
@@ -1186,12 +1220,33 @@ function startEndlessRound(round) {
   beginLevel(level, 'endless');
 }
 
+// Time Attack: one 4:00 clock across campaign levels 1-5. Clearing a
+// level banks its stars and advances to the next; the run ends when the
+// clock hits zero, a level runs out of shots, or all five are cleared.
+function startTimeAttack() {
+  state.timeAttackIndex = 0;
+  state.timeAttackStars = 0;
+  state.timeLeft = TIME_ATTACK_SECONDS;
+  lastTimerSecond = -1;
+  const level = levelById(TIME_ATTACK_LEVEL_IDS[0]);
+  beginLevel(level, 'timeattack');
+}
+
+function nextTimeAttackLevel() {
+  const id = TIME_ATTACK_LEVEL_IDS[state.timeAttackIndex];
+  const level = levelById(id);
+  if (!level) { quitToMenu(); return; }
+  beginLevel(level, 'timeattack');
+}
+
 // Retry / restart / replay: replays the exact same challenge level (same
-// seed and round), so a retry is never a different puzzle.
+// seed and round), so a retry is never a different puzzle. A Time Attack
+// retry restarts the whole run — the clock cannot be rewound.
 function restartCurrent() {
   if (state.mode === 'daily') startDaily();
   else if (state.mode === 'seed') startSeed(state.seedLabel || String(state.challengeSeed));
   else if (state.mode === 'endless') startEndlessRound(state.endlessRound);
+  else if (state.mode === 'timeattack') startTimeAttack();
   else startLevel(state.levelId);
 }
 
@@ -1274,6 +1329,20 @@ function completeLevel() {
     if (!save.endlessBest || save.endlessBest < state.endlessRound) {
       save.endlessBest = state.endlessRound;
     }
+  } else if (state.mode === 'timeattack') {
+    // A cleared level banks its stars into the run total. On the fifth
+    // level the run is over: the best full clear is most stars, then
+    // fastest — a partial run never records a best.
+    state.timeAttackStars += stars;
+    state.timeAttackIndex++;
+    if (state.timeAttackIndex >= TIME_ATTACK_LEVEL_IDS.length) {
+      const secondsUsed = Math.round(TIME_ATTACK_SECONDS - state.timeLeft);
+      const best = save.timeAttackBest;
+      if (!best || state.timeAttackStars > best.stars
+        || (state.timeAttackStars === best.stars && secondsUsed < best.seconds)) {
+        save.timeAttackBest = { stars: state.timeAttackStars, seconds: secondsUsed };
+      }
+    }
   }
   persistSave();
   state.phase = 'complete';
@@ -1282,8 +1351,9 @@ function completeLevel() {
   // A fresh unlock rings a rising chime just after the win arpeggio.
   if (unlockedNew) window.setTimeout(() => sfx.unlock(), 450);
   for (const t of level.targets) {
-    spawnBurst(t.x, t.y, 0, 0xffd166, 30, 8, 1.0);
-    spawnShockwave(t.x, t.y, 0xffd166, 7, 0.9);
+    const pos = targetPosAt(t, levelTime);
+    spawnBurst(pos.x, pos.y, 0, 0xffd166, 30, 8, 1.0);
+    spawnShockwave(pos.x, pos.y, 0xffd166, 7, 0.9);
   }
   $('complete-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
   let shotsLine = `Finished in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'} (par ${level.par})`;
@@ -1294,14 +1364,28 @@ function completeLevel() {
     shotsLine += ` · Seed best: ${'★'.repeat(b)}${'☆'.repeat(3 - b)}`;
   } else if (state.mode === 'endless') {
     shotsLine += ` · Round ${state.endlessRound} cleared`;
+  } else if (state.mode === 'timeattack') {
+    if (state.timeAttackIndex >= TIME_ATTACK_LEVEL_IDS.length) {
+      const secondsUsed = Math.round(TIME_ATTACK_SECONDS - state.timeLeft);
+      const best = save.timeAttackBest;
+      shotsLine = `Time Attack complete! ${state.timeAttackStars}/15 stars in ${formatClock(secondsUsed)}`
+        + (best ? ` · Best: ${best.stars}/15 in ${formatClock(best.seconds)}` : '');
+    } else {
+      shotsLine += ` · ${state.timeAttackStars}/15 stars · ${formatClock(state.timeLeft)} left`;
+    }
   }
   $('complete-shots').textContent = shotsLine;
-  // Endless: the Next button advances to the next round. Daily / seed:
-  // no next level — replay the same seed or go back to the menu.
+  // Endless: the Next button advances to the next round. Time Attack: it
+  // advances to the next level until the fifth is cleared, then hides.
+  // Daily / seed: no next level — replay the same seed or go back.
   const nextBtn = $('btn-next');
   if (state.mode === 'endless') {
     nextBtn.classList.remove('hidden');
     nextBtn.textContent = 'Next Round →';
+  } else if (state.mode === 'timeattack') {
+    const more = state.timeAttackIndex < TIME_ATTACK_LEVEL_IDS.length;
+    nextBtn.classList.toggle('hidden', !more);
+    nextBtn.textContent = 'Next Level →';
   } else {
     nextBtn.textContent = 'Next Level';
     nextBtn.classList.toggle('hidden',
@@ -1312,12 +1396,18 @@ function completeLevel() {
   showOnly('complete');
 }
 
-function failLevel() {
+function failLevel(reason) {
   const level = levelById(state.levelId);
   state.phase = 'failed';
   sfx.fail();
   let text = `${level.name}: out of shots with ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left. Try a different arc.`;
-  if (state.mode === 'endless') {
+  if (state.mode === 'timeattack') {
+    if (reason === 'time') {
+      text = `Time's up — you cleared ${state.timeAttackIndex} of 5 levels with ${state.timeAttackStars}/15 stars. The clock waits for no comet.`;
+    } else {
+      text = `Run over — out of shots on level ${state.timeAttackIndex + 1} of 5. You cleared ${state.timeAttackIndex} level${state.timeAttackIndex === 1 ? '' : 's'} with ${state.timeAttackStars}/15 stars.`;
+    }
+  } else if (state.mode === 'endless') {
     const cleared = state.endlessRound - 1;
     text = `Run over — you cleared ${cleared} round${cleared === 1 ? '' : 's'} of Endless Orbit. Retry the round or start a new run.`;
     if (!save.endlessBest || save.endlessBest < cleared) save.endlessBest = cleared;
@@ -1333,6 +1423,9 @@ function failLevel() {
     statsLine += ` · Best on this level: ${'★'.repeat(best)}${'☆'.repeat(3 - best)}`;
   } else if (state.mode === 'endless') {
     statsLine += ` · Endless best: ${save.endlessBest || 0} round${(save.endlessBest || 0) === 1 ? '' : 's'}`;
+  } else if (state.mode === 'timeattack') {
+    const best = save.timeAttackBest;
+    statsLine += ` · Time Attack best: ${best ? `${best.stars}/15 stars in ${formatClock(best.seconds)}` : 'no full clear yet'}`;
   } else {
     const best = challengeBest(state.mode);
     statsLine += ` · Best here: ${'★'.repeat(best)}${'☆'.repeat(3 - best)}`;
@@ -1414,7 +1507,8 @@ function stepFlightLoop(dt) {
         const mesh = shieldMeshes[idx];
         if (mesh) mesh.visible = false;
         const t = level.targets[idx];
-        feedback('shieldhit', t.x, t.y);
+        const pos = targetPosAt(t, levelTime);
+        feedback('shieldhit', pos.x, pos.y);
       }
     } else if (ev && ev.type === 'collect') {
       for (const idx of tmpNewly) {
@@ -1423,7 +1517,8 @@ function stepFlightLoop(dt) {
         const ring = targetRings[idx];
         if (ring) ring.visible = false;
         const t = level.targets[idx];
-        feedback('collect', t.x, t.y);
+        const pos = targetPosAt(t, levelTime);
+        feedback('collect', pos.x, pos.y);
       }
       // A shield crack in the same substep as a collect is applied
       // silently by the physics; sync the attempt state and rings so a
@@ -1709,6 +1804,7 @@ function wireButtons() {
     ensureAudio();
     sfx.click();
     if (state.mode === 'endless') startEndlessRound(state.endlessRound + 1);
+    else if (state.mode === 'timeattack') nextTimeAttackLevel();
     else if (state.levelId < LEVELS.length) startLevel(state.levelId + 1);
     else quitToMenu();
   });
@@ -1752,6 +1848,12 @@ function wireButtons() {
     ensureAudio();
     sfx.click();
     startEndless();
+  });
+  // Time Attack: one 4:00 clock across levels 1-5.
+  $('btn-timeattack').addEventListener('click', () => {
+    ensureAudio();
+    sfx.click();
+    startTimeAttack();
   });
   $('btn-seed').addEventListener('click', () => {
     ensureAudio();
@@ -1830,6 +1932,23 @@ function updatePlanetMeshes() {
   });
 }
 
+// Moving targets drift on their orbits; their meshes (and rings) are
+// repositioned every frame so what the player sees matches the physics.
+function updateTargetMeshes() {
+  const level = levelById(state.levelId);
+  if (!level) return;
+  level.targets.forEach((t, i) => {
+    if (!t.orbit) return;
+    const pos = targetPosAt(t, levelTime);
+    const m = targetMeshes[i];
+    if (m) m.position.set(pos.x, pos.y, 0);
+    const ring = targetRings[i];
+    if (ring) ring.position.set(pos.x, pos.y, 0);
+    const shield = shieldMeshes[i];
+    if (shield) shield.position.set(pos.x, pos.y, 0);
+  });
+}
+
 // ---------------------------------------------------------------- main loop
 let lastNow = performance.now();
 
@@ -1862,17 +1981,30 @@ function animate(now) {
       // lockstep with the simulation inside stepFlightLoop.
       if (state.phase === 'aim') {
         levelTime += dt;
-        if (levelHasMovingPlanets(level)) {
+        if (levelHasMovingPlanets(level) || levelHasMovingTargets(level)) {
           previewRefresh += dt;
           if (previewRefresh >= 0.15) {
             previewRefresh = 0;
             // Re-aim at the same angle/power: the preview and its readout
-            // follow the planets as they move.
+            // follow the planets (and drifting targets) as they move.
             setAim(state.aimAngle, state.aimPower);
           }
         }
       }
+      // The Time Attack clock ticks while aiming or flying (never while
+      // paused, complete or failed) and fails the run at zero.
+      if (state.mode === 'timeattack' && (state.phase === 'aim' || state.phase === 'fly')) {
+        state.timeLeft = Math.max(0, state.timeLeft - dt);
+        const sec = Math.ceil(state.timeLeft);
+        if (sec !== lastTimerSecond) {
+          lastTimerSecond = sec;
+          const timerEl = $('hud-timer');
+          if (timerEl) timerEl.textContent = `⏱ ${formatClock(state.timeLeft)}`;
+        }
+        if (state.timeLeft <= 0) failLevel('time');
+      }
       updatePlanetMeshes();
+      updateTargetMeshes();
       // Black hole accretion discs swirl; photon rings counter-rotate.
       for (const bh of blackHoleMeshes) {
         bh.disc.rotation.z += dt * 0.9;
@@ -1929,6 +2061,7 @@ window.__orbit = {
   playDaily: () => { ensureAudio(); startDaily(); },
   playSeed: (raw) => { ensureAudio(); return startSeed(raw); },
   playEndless: () => { ensureAudio(); startEndless(); },
+  playTimeAttack: () => { ensureAudio(); startTimeAttack(); },
   // Best collecting shot from the current aim clock (coarse grid, launch
   // times from now up to 3s ahead): the render check waits for the clock
   // to reach the returned t0, then launches — on moving-planet levels
@@ -1957,6 +2090,10 @@ window.__orbit = {
       return level && typeof level.difficulty === 'number' ? level.difficulty : null;
     })(),
     dailyDate: state.dailyDate,
+    timeLeft: state.timeLeft,
+    timeAttackStars: state.timeAttackStars,
+    timeAttackIndex: state.timeAttackIndex,
+    timeAttackBest: save.timeAttackBest ? { ...save.timeAttackBest } : null,
   }),
   info: () => {
     const level = levelById(state.levelId);
@@ -1964,11 +2101,13 @@ window.__orbit = {
       levelTime,
       blackHoles: level ? levelBlackHoles(level).length : 0,
       movingPlanets: level ? level.planets.filter((p) => p.orbit).length : 0,
+      movingTargets: level ? level.targets.filter((t) => t.orbit).length : 0,
       portals: level ? levelPortals(level).length : 0,
       bouncePads: level ? levelBouncePads(level).length : 0,
       shieldedTargets: level ? level.targets.filter((t) => targetHits(t) > 1).length : 0,
       shieldHits: { ...state.shieldHits },
       planetPositions: planetMeshes.map((m) => [m.position.x, m.position.y]),
+      targetPositions: targetMeshes.map((m) => [m.position.x, m.position.y]),
     };
   },
   // Live audio state for the render check: mute/volume, whether the

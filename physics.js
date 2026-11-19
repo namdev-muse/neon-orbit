@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.9.0';
+export const VERSION = '0.10.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -53,7 +53,7 @@ export const LEVELS = [
     targets: [{ x: 12, y: 0, r: 1.6 }],
   },
   {
-    id: 2, name: 'Curveball', par: 3,
+    id: 2, name: 'Curveball', par: 2,
     hint: 'The planet sits on the straight line. Aim wide and let gravity bend the shot home.',
     pad: { x: -14, y: -6 },
     planets: [{ x: 0, y: 0, r: 2.5, mu: 170, color: 0x8b5cf6 }],
@@ -70,32 +70,36 @@ export const LEVELS = [
     targets: [{ x: 10, y: 5, r: 1.6 }, { x: 12, y: -6, r: 1.6 }],
   },
   {
-    id: 4, name: 'The Long Way', par: 3,
+    id: 4, name: 'The Long Way', par: 2,
     hint: 'The target hides behind the planet. Slingshot around it — never through it.',
     pad: { x: -14, y: 0 },
     planets: [{ x: 2, y: 0, r: 2.5, mu: 200, color: 0x8b5cf6 }],
     targets: [{ x: 13, y: 0, r: 1.6 }],
   },
   {
-    id: 5, name: 'Heavyweight', par: 4,
+    id: 5, name: 'Heavyweight', par: 3,
     hint: 'A massive planet dominates the field. Use its pull, respect its surface.',
     pad: { x: -15, y: -8 },
     planets: [{ x: 0, y: 0, r: 3.5, mu: 320, color: 0x5b21b6 }],
     targets: [{ x: 12, y: 8, r: 1.6 }, { x: 13, y: -7, r: 1.6 }],
   },
   {
-    id: 6, name: 'Gauntlet', par: 5,
-    hint: 'Three planets, three targets, a tight shot budget. Chain the bends.',
+    id: 6, name: 'Gauntlet', par: 3,
+    hint: 'Three planets, three small targets, a tight shot budget. Chain the bends.',
     pad: { x: -16, y: 0 },
     planets: [
       { x: -4, y: 5, r: 2, mu: 140, color: 0x7c3aed },
       { x: 4, y: -5, r: 2, mu: 140, color: 0x6d28d9 },
       { x: 10, y: 4, r: 2, mu: 140, color: 0x8b5cf6 },
     ],
-    targets: [{ x: 15, y: 7, r: 1.6 }, { x: 16, y: -6, r: 1.6 }, { x: 6, y: 10, r: 1.6 }],
+    // Block 10 difficulty tuning: the old targets sat on one slow lob
+    // (63deg, power 0.25 collected all three). The targets are now
+    // smaller (r 1.4) and spread further apart, so the lob collects one
+    // at most and the solver needs 2 shots.
+    targets: [{ x: 16, y: 9, r: 1.4 }, { x: 17, y: -9, r: 1.4 }, { x: 8, y: 12, r: 1.4 }],
   },
   {
-    id: 7, name: 'Event Horizon', par: 3,
+    id: 7, name: 'Event Horizon', par: 2,
     hint: 'A black hole guards the target — it pulls hard and swallows comets. Arc over the top and let the planet bend you home.',
     pad: { x: -14, y: 0 },
     planets: [{ x: -2, y: 8, r: 2, mu: 140, color: 0x7c3aed }],
@@ -103,7 +107,7 @@ export const LEVELS = [
     targets: [{ x: 13, y: 0, r: 1.6 }],
   },
   {
-    id: 8, name: 'Carousel', par: 4,
+    id: 8, name: 'Carousel', par: 3,
     hint: 'The planet never sits still — it orbits the centre. Time your launch for when the bend lines up.',
     pad: { x: -15, y: 0 },
     planets: [
@@ -143,7 +147,49 @@ export const LEVELS = [
     bouncePads: [{ x: 4, y: 8, r: 2.2 }],
     targets: [{ x: 13, y: -7, r: 1.6 }, { x: 12, y: 7, r: 1.6 }],
   },
+  {
+    id: 12, name: 'Moving Stars', par: 2,
+    hint: 'The targets drift on small orbits — the faint rings show their paths. Lead your shot so the comet meets the target, not where it was.',
+    pad: { x: -15, y: 0 },
+    planets: [{ x: 0, y: 0, r: 2.5, mu: 200, color: 0x8b5cf6 }],
+    targets: [
+      // (x, y) is the position at t = 0: cx + radius * cos(phase).
+      { x: 12.5, y: 6, r: 1.6, orbit: { cx: 10, cy: 6, radius: 2.5, speed: 0.35, phase: 0 } },
+      { x: 10, y: -6, r: 1.6, orbit: { cx: 12, cy: -6, radius: 2, speed: -0.45, phase: Math.PI } },
+    ],
+  },
 ];
+
+// Target position at level time t. Static targets sit at (t.x, t.y);
+// a target with `orbit` drifts on a circle around (cx, cy) at `speed`
+// rad/s from `phase`. (t.x, t.y) is its position at t = 0.
+export function targetPosAt(target, t) {
+  if (!target.orbit) return { x: target.x, y: target.y };
+  const o = target.orbit;
+  const a = o.phase + o.speed * t;
+  return { x: o.cx + o.radius * Math.cos(a), y: o.cy + o.radius * Math.sin(a) };
+}
+
+export function levelHasMovingTargets(level) {
+  return (level.targets || []).some((t) => !!t.orbit);
+}
+
+export function levelMovingTargets(level) {
+  return (level.targets || []).filter((t) => !!t.orbit);
+}
+
+// ---------------------------------------------------------------- time attack
+// Time Attack: clear campaign levels 1-5 against one shared clock.
+// TIME_ATTACK_SECONDS is the whole run's budget, not per level.
+export const TIME_ATTACK_LEVEL_IDS = [1, 2, 3, 4, 5];
+export const TIME_ATTACK_SECONDS = 240;
+
+// Clock display: 240 -> "4:00", 222 -> "3:42", 7 -> "0:07".
+export function formatClock(totalSeconds) {
+  const s = Math.max(0, Math.ceil(totalSeconds));
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, '0')}`;
+}
 
 // ---------------------------------------------------------------- seeded levels
 // Challenge modes (daily / seed / endless) all run on generated levels:
@@ -216,7 +262,7 @@ export function solveShot(level, collected = [], opts = {}) {
   const angleStep = coarse ? 8 : 2;
   const powerStep = coarse ? 0.25 : 0.1;
   const powerMin = coarse ? 0.25 : 0.15;
-  const t0s = opts.t0s || (levelHasMovingPlanets(level)
+  const t0s = opts.t0s || (levelHasMovingPlanets(level) || levelHasMovingTargets(level)
     ? [0, 0.75, 1.5, 2.25, 3, 3.75, 4.5, 5.25, 6] : [0]);
   let best = null;
   const score = (res) => {
@@ -596,18 +642,21 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
       return { type: 'crash', targets: [] };
     }
   }
-  // Target collect. A shielded target needs `hits` contacts: each contact
+  // Target collect. A moving target is checked at its current position
+  // (level time), so a shot must meet the target where it is, not where
+  // it started. A shielded target needs `hits` contacts: each contact
   // cracks one shield layer (once per shot — the same shot cannot crack
   // the same target twice), and only the final hit collects it.
   const newlyShieldHit = [];
   for (let i = 0; i < level.targets.length; i++) {
     if (collected.includes(i)) continue;
     if (state.shieldHitThisShot.includes(i)) continue;
-    const t = level.targets[i];
-    const dx = state.x - t.x, dy = state.y - t.y;
-    const rr = t.r + COMET_RADIUS;
+    const tgt = level.targets[i];
+    const pos = targetPosAt(tgt, t);
+    const dx = state.x - pos.x, dy = state.y - pos.y;
+    const rr = tgt.r + COMET_RADIUS;
     if (dx * dx + dy * dy < rr * rr) {
-      const remaining = state.shieldHits[i] ?? targetHits(t);
+      const remaining = state.shieldHits[i] ?? targetHits(tgt);
       if (remaining > 1) {
         state.shieldHits[i] = remaining - 1;
         state.shieldHitThisShot.push(i);
@@ -717,18 +766,27 @@ export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0, 
 
 // ---------------------------------------------------------------- save data
 export function defaultSave() {
-  return { stars: {}, unlocked: 1, seenHowTo: false, daily: null, seedBest: {}, endlessBest: 0 };
+  return { stars: {}, unlocked: 1, seenHowTo: false, daily: null, seedBest: {}, endlessBest: 0, timeAttackBest: null };
 }
 
 // stars: { levelId: 0..3 }, unlocked: highest unlocked level id.
 // daily: { date: 'YYYY-MM-DD', stars: 0..3 } — best on today's daily level.
 // seedBest: { seedLabel: 0..3 } — best stars per shared seed (capped at 100).
 // endlessBest: most endless rounds cleared in one run (0..99).
+// timeAttackBest: { stars: 0..15, seconds: 0..240 } — best full clear of
+// Time Attack (most stars, then fastest); null until the first full clear.
 export function serializeSave(save) {
   const daily = save.daily && typeof save.daily.date === 'string'
     && /^\d{4}-\d{2}-\d{2}$/.test(save.daily.date)
     && Number.isInteger(save.daily.stars)
     ? { date: save.daily.date, stars: Math.max(0, Math.min(3, save.daily.stars)) }
+    : null;
+  const timeAttackBest = save.timeAttackBest && typeof save.timeAttackBest === 'object'
+    && Number.isInteger(save.timeAttackBest.stars)
+    && save.timeAttackBest.stars >= 0 && save.timeAttackBest.stars <= 15
+    && Number.isInteger(save.timeAttackBest.seconds)
+    && save.timeAttackBest.seconds >= 0 && save.timeAttackBest.seconds <= TIME_ATTACK_SECONDS
+    ? { stars: save.timeAttackBest.stars, seconds: save.timeAttackBest.seconds }
     : null;
   const seedBest = {};
   if (save.seedBest && typeof save.seedBest === 'object') {
@@ -744,6 +802,7 @@ export function serializeSave(save) {
     seedBest,
     endlessBest: Number.isInteger(save.endlessBest)
       ? Math.max(0, Math.min(99, save.endlessBest)) : 0,
+    timeAttackBest,
   });
 }
 
@@ -778,6 +837,13 @@ export function parseSave(json) {
     }
     if (Number.isInteger(raw.endlessBest)) {
       save.endlessBest = Math.max(0, Math.min(99, raw.endlessBest));
+    }
+    if (raw.timeAttackBest && typeof raw.timeAttackBest === 'object'
+      && Number.isInteger(raw.timeAttackBest.stars)
+      && raw.timeAttackBest.stars >= 0 && raw.timeAttackBest.stars <= 15
+      && Number.isInteger(raw.timeAttackBest.seconds)
+      && raw.timeAttackBest.seconds >= 0 && raw.timeAttackBest.seconds <= TIME_ATTACK_SECONDS) {
+      save.timeAttackBest = { stars: raw.timeAttackBest.stars, seconds: raw.timeAttackBest.seconds };
     }
     return save;
   } catch {
