@@ -42,7 +42,6 @@ First playable build of game #3: a 3D gravity-slingshot puzzle in Three.js.
   target placement once difficulty tuning starts.
 
 ## Block 2 — 2026-11-20 01:30 Asia/Bangkok (v0.2.0)
-
 Trajectory preview polish + shot feedback + star ratings (backlog #1, #2, #5).
 
 - Trajectory preview: new `previewShot()` in `physics.js` returns the
@@ -66,3 +65,36 @@ Trajectory preview polish + shot feedback + star ratings (backlog #1, #2, #5).
   meter mid-drag, and a preview prediction. A one-off headless check
   confirmed fine aim: the same drag gives power 1.00 normally, 0.25 with
   Shift held. Bot still solves all 6 levels within budget, 3 stars each.
+
+## Block 3 — 2026-11-20 02:00 Asia/Bangkok (v0.3.0)
+
+New mechanics: black holes + moving planets (backlog #6, #7), with two
+showcase levels.
+
+- **Black holes (#6):** a level can list `blackHoles: [{x, y, r, mu}]`.
+  They pull with the same softened gravity law at a much larger mu, and a
+  comet crossing the event horizon (`r + comet radius`) is swallowed —
+  a new `swallowed` outcome in `simulateLaunch` / `previewShot`, a red
+  predicted-end marker and "Predicted: swallowed!" in the aim readout.
+  The game renders each hole as a black core with a spinning orange
+  accretion disc, a gold photon ring and a warm point light, and a swallow
+  fires its own feedback (0.6 trauma, 0.08s hit-stop, descending sweep,
+  violet burst). Level 7 "Event Horizon" guards its target with one:
+  naive straight shots get swallowed, the arcing line over the top works.
+- **Moving planets (#7):** a planet can carry
+  `orbit: {cx, cy, radius, speed, phase}` and travels that circle on the
+  level clock. `planetPosAt(p, t)` is the single source of truth for
+  gravity, crash checks, preview, and the meshes. The clock runs while
+  aiming and advances in lockstep with the flight substeps, so the preview
+  and the flight never disagree; while aiming on a moving-planet level the
+  preview re-runs every 0.15s so it follows the planet live. The orbit
+  path is drawn as a faint violet ring. Level 8 "Carousel" has one planet
+  orbiting the centre — the same aim crashes at t0=0 and collects at
+  t0=2.25, so timing is the puzzle.
+- **Bot harness:** the solver now searches launch time too (9 sampled t0
+  values) on levels with moving planets and penalises `swallowed` like a
+  crash. It still solves all 8 levels within budget, 3 stars each.
+- Tests: smoke grew 63 → 83 checks (orbit geometry, determinism at a
+  fixed t0, time-dependence of the same launch, swallow + preview, orbit
+  clearance for targets and pad). Levels 7–8 are the first two of backlog
+  #15 (levels 7–12); #15 stays open for levels 9–12.
