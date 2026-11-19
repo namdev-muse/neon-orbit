@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -25,6 +25,9 @@ export const FEEDBACK = {
   collect: { tier: 'small', trauma: 0.18, hitStop: 0 },
   lost: { tier: 'small', trauma: 0.15, hitStop: 0 },
   slingshot: { tier: 'small', trauma: 0.15, hitStop: 0 },
+  portal: { tier: 'small', trauma: 0.15, hitStop: 0 },
+  bounce: { tier: 'small', trauma: 0.15, hitStop: 0 },
+  shieldhit: { tier: 'small', trauma: 0.18, hitStop: 0 },
   win: { tier: 'medium', trauma: 0.30, hitStop: 0.05 },
   swallowed: { tier: 'medium', trauma: 0.50, hitStop: 0.06 },
   crash: { tier: 'large', trauma: 0.85, hitStop: 0.12 },
@@ -111,6 +114,35 @@ export const LEVELS = [
     ],
     targets: [{ x: 12, y: 7, r: 1.6 }, { x: 13, y: -7, r: 1.6 }],
   },
+  {
+    id: 9, name: 'Portal Hop', par: 3,
+    hint: 'Portals come in pairs — fly into one and you exit the other with the same speed. Use the shortcut to slip past the planet.',
+    pad: { x: -15, y: 0 },
+    planets: [{ x: 0, y: 0, r: 2.5, mu: 200, color: 0x8b5cf6 }],
+    portals: [
+      { x: -8, y: -7, r: 1.6, pair: 0 },
+      { x: 7, y: 7, r: 1.6, pair: 0 },
+    ],
+    targets: [{ x: 13, y: -1, r: 1.6 }, { x: 11, y: 9, r: 1.6 }],
+  },
+  {
+    id: 10, name: 'Shielded Stars', par: 4,
+    hint: 'Shielded targets take two hits — the first cracks the shield, the second collects the star. Budget your shots.',
+    pad: { x: -15, y: 0 },
+    planets: [
+      { x: -2, y: 5, r: 2, mu: 130, color: 0x7c3aed },
+      { x: 3, y: -5, r: 2, mu: 130, color: 0x6d28d9 },
+    ],
+    targets: [{ x: 12, y: 6, r: 1.6, hits: 2 }, { x: 13, y: -6, r: 1.6, hits: 2 }],
+  },
+  {
+    id: 11, name: 'Bounce House', par: 3,
+    hint: 'Bounce pads reflect the comet like a mirror — hit one at an angle and it throws you around the planet.',
+    pad: { x: -15, y: -6 },
+    planets: [{ x: 0, y: 0, r: 3, mu: 280, color: 0x5b21b6 }],
+    bouncePads: [{ x: 4, y: 8, r: 2.2 }],
+    targets: [{ x: 13, y: -7, r: 1.6 }, { x: 12, y: 7, r: 1.6 }],
+  },
 ];
 
 // ---------------------------------------------------------------- seeded levels
@@ -189,6 +221,10 @@ export function solveShot(level, collected = [], opts = {}) {
   let best = null;
   const score = (res) => {
     let s = res.collected.length * 10000;
+    // Cracking a shield is real progress: a shot that cracks but
+    // collects nothing still scores above a clean miss, so the solver
+    // plans the crack shot first and the collect shot after it.
+    s += (res.shieldCracks || 0) * 4000;
     if (res.outcome === 'crash') s -= 5000;
     if (res.outcome === 'swallowed') s -= 5000;
     if (res.outcome === 'timeout') s -= 2000;
@@ -197,7 +233,9 @@ export function solveShot(level, collected = [], opts = {}) {
     return s;
   };
   const consider = (angle, power, t0) => {
-    const res = simulateLaunch(level, angle, power, collected, { record: false, t0 });
+    const res = simulateLaunch(level, angle, power, collected, {
+      record: false, t0, shieldHits: opts.shieldHits || {},
+    });
     const sc = score(res);
     if (!best || sc > best.score) best = { angle, power, t0, score: sc, res };
   };
@@ -226,13 +264,17 @@ export function solveShot(level, collected = [], opts = {}) {
 // both use; `coarse` keeps the search cheap for generation checks.
 export function solveLevel(level, budget, opts = {}) {
   const collected = [];
+  // Shield cracks persist across shots: the map the solver threads from
+  // one shot to the next is the same one the game keeps in state.
+  let shieldHits = opts.shieldHits ? { ...opts.shieldHits } : {};
   const lines = [];
   let shots = 0;
   while (collected.length < level.targets.length && shots < budget) {
-    const best = solveShot(level, collected, opts);
+    const best = solveShot(level, collected, { ...opts, shieldHits });
     if (!best) return null;
     shots++;
     lines.push({ angle: best.angle, power: best.power, t0: best.t0 });
+    shieldHits = best.res.shieldHits || shieldHits;
     for (const i of best.res.collected) {
       if (!collected.includes(i)) collected.push(i);
     }
@@ -424,13 +466,38 @@ export function levelBlackHoles(level) {
   return level.blackHoles || [];
 }
 
-export function launchState(level, angle, power, t0 = 0) {
+// Portals come in pairs (same `pair` index): entering one teleports the
+// comet out of its twin with the entry velocity unchanged.
+export function levelPortals(level) {
+  return level.portals || [];
+}
+
+// Bounce pads are circular reflectors: the comet reflects off the pad's
+// surface once per pad per shot, like a mirror.
+export function levelBouncePads(level) {
+  return level.bouncePads || [];
+}
+
+// Hits a target needs before it collects: 1 normally, 2 for a shielded
+// target (the first hit only cracks the shield).
+export function targetHits(target) {
+  return Number.isInteger(target.hits) && target.hits >= 1 ? target.hits : 1;
+}
+
+export function launchState(level, angle, power, t0 = 0, shieldHits = {}) {
   const speed = Math.max(0, Math.min(1, power)) * MAX_SPEED;
   return {
     x: level.pad.x, y: level.pad.y,
     vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
     t: 0, t0, done: false,
     slingshotPlanets: [], // planet indices already credited this shot
+    // Shield state at launch: target index -> hits remaining. Copied so a
+    // simulation never mutates the caller's map; the result carries the
+    // updated map back for the next shot (shield cracks persist).
+    shieldHits: { ...shieldHits },
+    shieldHitThisShot: [], // shielded targets already hit this shot (immune)
+    portalCooldown: {}, // portal pair -> level time until re-entry is allowed
+    bouncedPads: [], // bounce pad indices already used this shot
   };
 }
 
@@ -472,6 +539,44 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
   state.y += state.vy * dt;
   state.t += dt;
 
+  // Portal teleport: entering one portal exits its twin with the entry
+  // velocity unchanged, placed just outside the twin's trigger radius
+  // along the flight direction so it never re-triggers instantly. The
+  // pair then cools down for 0.6s so a fast return pass is not eaten.
+  for (const portal of levelPortals(level)) {
+    const dx = state.x - portal.x, dy = state.y - portal.y;
+    const rr = portal.r + COMET_RADIUS;
+    if (dx * dx + dy * dy >= rr * rr) continue;
+    const pair = portal.pair ?? 0;
+    if ((state.portalCooldown[pair] || 0) > state.t) continue;
+    const twin = levelPortals(level).find((p) => p !== portal && (p.pair ?? 0) === pair);
+    if (!twin) continue;
+    const sp = Math.hypot(state.vx, state.vy) || 1;
+    const nx = state.vx / sp, ny = state.vy / sp;
+    state.x = twin.x + nx * (twin.r + COMET_RADIUS + 0.2);
+    state.y = twin.y + ny * (twin.r + COMET_RADIUS + 0.2);
+    state.portalCooldown[pair] = state.t + 0.6;
+    return { type: 'portal', targets: [] };
+  }
+  // Bounce pad: reflect the velocity about the radial normal (mirror
+  // bounce), once per pad per shot, and push the comet just outside the
+  // pad so the same contact does not fire twice.
+  for (let i = 0; i < levelBouncePads(level).length; i++) {
+    if (state.bouncedPads.includes(i)) continue;
+    const pad = levelBouncePads(level)[i];
+    const dx = state.x - pad.x, dy = state.y - pad.y;
+    const dist = Math.hypot(dx, dy);
+    const rr = pad.r + COMET_RADIUS;
+    if (dist >= rr || dist === 0) continue;
+    const nx = dx / dist, ny = dy / dist;
+    const dot = state.vx * nx + state.vy * ny;
+    state.vx -= 2 * dot * nx;
+    state.vy -= 2 * dot * ny;
+    state.x = pad.x + nx * (rr + 0.1);
+    state.y = pad.y + ny * (rr + 0.1);
+    state.bouncedPads.push(i);
+    return { type: 'bounce', targets: [] };
+  }
   // Black hole swallow (event horizon): the comet is gone, shot lost.
   for (const bh of levelBlackHoles(level)) {
     const dx = state.x - bh.x, dy = state.y - bh.y;
@@ -491,15 +596,26 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
       return { type: 'crash', targets: [] };
     }
   }
-  // Target collect.
+  // Target collect. A shielded target needs `hits` contacts: each contact
+  // cracks one shield layer (once per shot — the same shot cannot crack
+  // the same target twice), and only the final hit collects it.
+  const newlyShieldHit = [];
   for (let i = 0; i < level.targets.length; i++) {
     if (collected.includes(i)) continue;
+    if (state.shieldHitThisShot.includes(i)) continue;
     const t = level.targets[i];
     const dx = state.x - t.x, dy = state.y - t.y;
     const rr = t.r + COMET_RADIUS;
     if (dx * dx + dy * dy < rr * rr) {
-      collected.push(i);
-      newlyCollected.push(i);
+      const remaining = state.shieldHits[i] ?? targetHits(t);
+      if (remaining > 1) {
+        state.shieldHits[i] = remaining - 1;
+        state.shieldHitThisShot.push(i);
+        newlyShieldHit.push(i);
+      } else {
+        collected.push(i);
+        newlyCollected.push(i);
+      }
     }
   }
   // Out of bounds.
@@ -514,6 +630,9 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
   if (newlyCollected.length > 0) {
     return { type: 'collect', targets: newlyCollected.slice() };
   }
+  if (newlyShieldHit.length > 0) {
+    return { type: 'shieldhit', targets: newlyShieldHit.slice() };
+  }
   return null;
 }
 
@@ -525,10 +644,13 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
 export function simulateLaunch(level, angle, power, alreadyCollected = [], opts = {}) {
   const record = opts.record !== false;
   const collected = alreadyCollected.slice();
-  const state = launchState(level, angle, power, opts.t0 || 0);
+  const state = launchState(level, angle, power, opts.t0 || 0, opts.shieldHits || {});
   const points = record ? [[state.x, state.y]] : [];
   let steps = 0;
   let lastEvent = null;
+  let shieldCracks = 0;
+  let portalUses = 0;
+  let bounces = 0;
   const newly = [];
   while (!state.done) {
     newly.length = 0;
@@ -536,6 +658,11 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
     steps++;
     if (record && steps % 4 === 0 && points.length < 600) points.push([state.x, state.y]);
     if (ev) {
+      // Portal hops, bounces and shield cracks never end the shot — the
+      // comet keeps flying, so the simulation continues past them.
+      if (ev.type === 'portal') { portalUses++; lastEvent = ev; continue; }
+      if (ev.type === 'bounce') { bounces++; lastEvent = ev; continue; }
+      if (ev.type === 'shieldhit') { shieldCracks += ev.targets.length; lastEvent = ev; continue; }
       lastEvent = ev;
       if (ev.type === 'collect') {
         if (isLevelComplete(level, collected)) {
@@ -564,6 +691,8 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
   return {
     outcome, collected: gained, points, steps,
     time: state.t, end: { x: state.x, y: state.y },
+    shieldHits: { ...state.shieldHits },
+    shieldCracks, portalUses, bounces,
   };
 }
 
@@ -575,8 +704,8 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
 // `outcome` here is the simulateLaunch outcome: 'collected' | 'partial' |
 // 'crash' | 'swallowed' | 'lost' | 'timeout' | 'none'.
 // `t0` is the level time at launch — moving-planet previews depend on it.
-export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0) {
-  const sim = simulateLaunch(level, angle, power, alreadyCollected, { record: true, t0 });
+export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0, shieldHits = {}) {
+  const sim = simulateLaunch(level, angle, power, alreadyCollected, { record: true, t0, shieldHits });
   return {
     points: sim.points,
     outcome: sim.outcome,

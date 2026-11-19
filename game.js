@@ -1,4 +1,4 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.7.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.9.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
@@ -6,14 +6,15 @@ import {
   LEVELS, PLAYFIELD_RADIUS, SUBSTEP,
   levelById, shotBudget, starsForShots, starThresholds, isLevelComplete,
   generateDecor, launchState, stepFlight, previewShot, planetPosAt,
-  levelHasMovingPlanets, levelBlackHoles, FEEDBACK, isNearMiss,
+  levelHasMovingPlanets, levelBlackHoles, levelPortals, levelBouncePads,
+  targetHits, FEEDBACK, isNearMiss,
   defaultSave, serializeSave, parseSave, totalStars,
   dateSeed, dateKey, dailyDifficulty, endlessDifficulty, parseSeedParam,
   generateLevel, registerGeneratedLevel, solveShot,
   clampZoom, isTapGesture, focusStep,
 } from './physics.js';
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -41,6 +42,11 @@ const state = {
   shotsLeft: 0,
   targetsRemaining: 0,
   collected: [],
+  // Shield state for this attempt: target index -> hits remaining on a
+  // shielded target (2 at level start, 1 once cracked). Persists across
+  // shots until the level restarts; the preview and solver read it so a
+  // cracked shield shows as one hit from collecting.
+  shieldHits: {},
   aimAngle: 0,
   aimPower: 0.6,
   fineAim: false,
@@ -221,6 +227,25 @@ const sfx = {
     tone(240, 0.35, 'sine', 0.12, 960);
     tone(480, 0.2, 'triangle', 0.06, 1440, 0.05);
   },
+  // Portal hop: a rising shimmer as the comet exits the twin portal.
+  portal() {
+    recordSfx('portal');
+    tone(300, 0.25, 'sine', 0.12, 1200);
+    tone(600, 0.2, 'sine', 0.08, 1800, 0.04);
+  },
+  // Bounce pad: a short rubbery blip, low then high.
+  bounce() {
+    recordSfx('bounce');
+    tone(520, 0.1, 'square', 0.08, 260);
+    tone(780, 0.08, 'square', 0.05, null, 0.06);
+  },
+  // Shield crack: a metallic clink — two detuned highs plus a tick.
+  shieldhit() {
+    recordSfx('shieldhit');
+    tone(1180, 0.1, 'square', 0.07);
+    tone(1240, 0.1, 'square', 0.06, null, 0.02);
+    noiseBurst(0.06, 0.06, 4000);
+  },
   win() {
     recordSfx('win');
     [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.22, 'sine', 0.15, null, i * 0.09));
@@ -359,6 +384,33 @@ const bhDiscMat = new THREE.MeshBasicMaterial({
 });
 const bhRingGeo = new THREE.TorusGeometry(1, 0.035, 8, 64);
 const bhRingMat = new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9 });
+// Portal materials: one colour per pair (cyan, gold, violet) so twins
+// always match — a torus ring plus a swirling additive disc.
+const PORTAL_COLORS = [0x22d3ee, 0xffd166, 0xa855f7];
+const portalRingGeo = new THREE.TorusGeometry(1, 0.07, 8, 48);
+const portalDiscGeo = new THREE.CircleGeometry(1, 32);
+const portalRingMats = PORTAL_COLORS.map((c) => new THREE.MeshBasicMaterial({
+  color: c, transparent: true, opacity: 0.95,
+}));
+const portalDiscMats = PORTAL_COLORS.map((c) => new THREE.MeshBasicMaterial({
+  color: c, transparent: true, opacity: 0.3,
+  blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+}));
+// Bounce pads: a lime disc with a bright ring, flat on the playfield.
+const bouncePadGeo = new THREE.CircleGeometry(1, 48);
+const bouncePadMat = new THREE.MeshStandardMaterial({
+  color: 0x4ade80, emissive: 0x4ade80, emissiveIntensity: 0.55, roughness: 0.4, metalness: 0.1,
+});
+const bouncePadRingGeo = new THREE.RingGeometry(0.92, 1, 48);
+const bouncePadRingMat = new THREE.MeshBasicMaterial({
+  color: 0xbbf7d0, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
+});
+// Shield rings: a white ring around a shielded target; it vanishes when
+// the shield cracks, so the remaining hit reads at a glance.
+const shieldRingGeo = new THREE.TorusGeometry(1, 0.07, 8, 48);
+const shieldRingMat = new THREE.MeshBasicMaterial({
+  color: 0xe2e8f0, transparent: true, opacity: 0.85,
+});
 
 // Playfield disc + boundary ring.
 const disc = new THREE.Mesh(
@@ -394,7 +446,10 @@ let planetMeshes = [];
 let planetRings = [];
 let targetMeshes = [];
 let targetRings = [];
+let shieldMeshes = []; // shield ring per target (null unless shielded)
 let blackHoleMeshes = []; // { disc, ring } per black hole (disc spins)
+let portalMeshes = []; // { group, disc, ring } per portal (disc swirls)
+let bouncePadMeshes = []; // { disc, ring } per bounce pad
 
 // Comet + its glow light.
 const comet = new THREE.Mesh(cometGeo, cometMat);
@@ -578,6 +633,9 @@ let trauma = 0;
 let hitStopUntil = 0;
 let hitStopToken = 0;
 let slingshotCount = 0; // near-miss slingshots credited on the current shot
+let portalCount = 0; // portal hops on the current shot
+let bounceCount = 0; // bounce-pad reflections on the current shot
+let shieldHitCount = 0; // shield cracks on the current shot
 
 function addTrauma(amount) {
   trauma = Math.min(1, trauma + amount);
@@ -615,6 +673,20 @@ function feedback(kind, x, y) {
     slingshotCount++;
     sfx.slingshot();
     spawnBurst(x, y, 0, 0xffd166, 14, 6, 0.5);
+  } else if (kind === 'portal') {
+    portalCount++;
+    sfx.portal();
+    spawnBurst(x, y, 0, 0x22d3ee, 20, 7, 0.6);
+    spawnShockwave(x, y, 0x22d3ee, 4, 0.6);
+  } else if (kind === 'bounce') {
+    bounceCount++;
+    sfx.bounce();
+    spawnBurst(x, y, 0, 0x4ade80, 16, 6, 0.5);
+    spawnShockwave(x, y, 0x4ade80, 3.5, 0.5);
+  } else if (kind === 'shieldhit') {
+    shieldHitCount++;
+    sfx.shieldhit();
+    spawnBurst(x, y, 0, 0xe2e8f0, 18, 6, 0.5);
   } else if (kind === 'win') {
     sfx.win();
   }
@@ -812,7 +884,10 @@ function buildLevelMeshes(level) {
   planetRings = [];
   targetMeshes = [];
   targetRings = [];
+  shieldMeshes = [];
   blackHoleMeshes = [];
+  portalMeshes = [];
+  bouncePadMeshes = [];
   for (const p of level.planets) {
     const mat = new THREE.MeshStandardMaterial({
       color: p.color, emissive: p.color, emissiveIntensity: 0.55,
@@ -868,6 +943,33 @@ function buildLevelMeshes(level) {
     levelGroup.add(group);
     blackHoleMeshes.push({ disc, ring });
   }
+  // Portals: a ring + a swirling disc, coloured by pair so twins match.
+  for (const portal of levelPortals(level)) {
+    const pair = (portal.pair ?? 0) % PORTAL_COLORS.length;
+    const group = new THREE.Group();
+    group.position.set(portal.x, portal.y, 0);
+    const ring = new THREE.Mesh(portalRingGeo, portalRingMats[pair]);
+    ring.scale.setScalar(portal.r);
+    group.add(ring);
+    const disc = new THREE.Mesh(portalDiscGeo, portalDiscMats[pair]);
+    disc.scale.setScalar(portal.r * 0.85);
+    disc.position.z = -0.2;
+    group.add(disc);
+    levelGroup.add(group);
+    portalMeshes.push({ group, disc, ring, base: portal.r });
+  }
+  // Bounce pads: a lime disc on the playfield with a bright rim.
+  for (const pad of levelBouncePads(level)) {
+    const disc = new THREE.Mesh(bouncePadGeo, bouncePadMat);
+    disc.position.set(pad.x, pad.y, -0.3);
+    disc.scale.setScalar(pad.r);
+    levelGroup.add(disc);
+    const ring = new THREE.Mesh(bouncePadRingGeo, bouncePadRingMat);
+    ring.position.set(pad.x, pad.y, -0.25);
+    ring.scale.setScalar(pad.r);
+    levelGroup.add(ring);
+    bouncePadMeshes.push({ disc, ring });
+  }
   level.targets.forEach((t, i) => {
     const m = new THREE.Mesh(targetGeo, targetMat);
     m.position.set(t.x, t.y, 0);
@@ -879,6 +981,17 @@ function buildLevelMeshes(level) {
     ring.position.set(t.x, t.y, 0);
     levelGroup.add(ring);
     targetRings.push(ring);
+    // Shielded targets get a white shield ring that vanishes on the
+    // cracking hit, so one hit left reads at a glance.
+    if (targetHits(t) > 1) {
+      const shield = new THREE.Mesh(shieldRingGeo, shieldRingMat);
+      shield.position.set(t.x, t.y, 0);
+      shield.scale.setScalar(t.r * 1.5);
+      levelGroup.add(shield);
+      shieldMeshes.push(shield);
+    } else {
+      shieldMeshes.push(null);
+    }
   });
 }
 
@@ -929,7 +1042,8 @@ function updatePreview() {
     return;
   }
   // Preview follows the level clock: moving planets shift the shot.
-  const sim = previewShot(level, state.aimAngle, state.aimPower, state.collected, levelTime);
+  // Shield state matters too: a cracked shield previews as one hit away.
+  const sim = previewShot(level, state.aimAngle, state.aimPower, state.collected, levelTime, state.shieldHits);
   const outcome = sim.outcome === 'collected' || sim.outcome === 'partial' ? 'collect'
     : sim.outcome === 'crash' ? 'crash'
     : sim.outcome === 'swallowed' ? 'swallowed'
@@ -1000,6 +1114,7 @@ function beginLevel(level, mode) {
   state.levelName = level.name;
   state.shotsUsed = 0;
   state.collected = [];
+  state.shieldHits = {};
   state.stars = mode === 'campaign' ? (save.stars[level.id] || 0) : challengeBest(mode);
   state.targetsRemaining = level.targets.length;
   flight = null;
@@ -1083,10 +1198,15 @@ function restartCurrent() {
 function launch() {
   if (state.phase !== 'aim' || flightEnding) return;
   const level = levelById(state.levelId);
-  flight = launchState(level, state.aimAngle, state.aimPower, levelTime);
+  // The flight carries the attempt's shield state: a target cracked by
+  // an earlier shot is one hit from collecting on this one.
+  flight = launchState(level, state.aimAngle, state.aimPower, levelTime, state.shieldHits);
   flightAcc = 0;
   flightEnding = false;
   slingshotCount = 0;
+  portalCount = 0;
+  bounceCount = 0;
+  shieldHitCount = 0;
   state.phase = 'fly';
   previewLine.visible = false;
   previewDots.visible = false;
@@ -1278,7 +1398,25 @@ function stepFlightLoop(dt) {
         feedback('slingshot', flight.x, flight.y);
       }
     });
-    if (ev && ev.type === 'collect') {
+    if (ev && ev.type === 'portal') {
+      // The comet jumped to the twin portal: clear the trail so no streak
+      // crosses the playfield, and flash the exit point.
+      feedback('portal', flight.x, flight.y);
+      trailHistory = [];
+      updateTrailLine();
+    } else if (ev && ev.type === 'bounce') {
+      feedback('bounce', flight.x, flight.y);
+    } else if (ev && ev.type === 'shieldhit') {
+      // The crack persists in the attempt's shield state, and the shield
+      // ring on that target vanishes so one hit left reads at a glance.
+      for (const idx of ev.targets) {
+        state.shieldHits[idx] = flight.shieldHits[idx];
+        const mesh = shieldMeshes[idx];
+        if (mesh) mesh.visible = false;
+        const t = level.targets[idx];
+        feedback('shieldhit', t.x, t.y);
+      }
+    } else if (ev && ev.type === 'collect') {
       for (const idx of tmpNewly) {
         const mesh = targetMeshes[idx];
         if (mesh) mesh.visible = false;
@@ -1286,6 +1424,17 @@ function stepFlightLoop(dt) {
         if (ring) ring.visible = false;
         const t = level.targets[idx];
         feedback('collect', t.x, t.y);
+      }
+      // A shield crack in the same substep as a collect is applied
+      // silently by the physics; sync the attempt state and rings so a
+      // cracked shield never shows as intact.
+      for (const [k, v] of Object.entries(flight.shieldHits)) {
+        const idx = Number(k);
+        if (state.shieldHits[idx] !== v) {
+          state.shieldHits[idx] = v;
+          const mesh = shieldMeshes[idx];
+          if (mesh) mesh.visible = false;
+        }
       }
       state.targetsRemaining = level.targets.length - state.collected.length;
       updateHUD();
@@ -1729,6 +1878,16 @@ function animate(now) {
         bh.disc.rotation.z += dt * 0.9;
         bh.ring.rotation.z -= dt * 0.4;
       }
+      // Portal discs swirl and their rings breathe, so twins read as live.
+      for (const portal of portalMeshes) {
+        portal.disc.rotation.z += dt * 1.6;
+        const pulse = 1 + 0.06 * Math.sin(t * 3 + portal.group.position.x);
+        portal.ring.scale.setScalar(portal.base * pulse);
+      }
+      // Shield rings turn slowly around their target.
+      for (const shield of shieldMeshes) {
+        if (shield && shield.visible) shield.rotation.z += dt * 0.6;
+      }
       targetMeshes.forEach((m, i) => {
         if (!m.visible) return;
         const r = level.targets[i].r;
@@ -1773,16 +1932,19 @@ window.__orbit = {
   // Best collecting shot from the current aim clock (coarse grid, launch
   // times from now up to 3s ahead): the render check waits for the clock
   // to reach the returned t0, then launches — on moving-planet levels
-  // that means waiting for the bend to line up.
+  // that means waiting for the bend to line up. A shot that only cracks
+  // a shield still counts: on a shielded level the crack is the useful
+  // first move, so it is returned (with shieldCracks) instead of null.
   solveShot: () => {
     const level = levelById(state.levelId);
     if (!level || state.phase !== 'aim') return null;
     const t0s = [0, 0.5, 1, 1.5, 2, 2.5, 3].map((d) => levelTime + d);
-    const best = solveShot(level, state.collected, { coarse: true, t0s });
-    if (!best || best.res.collected.length === 0) return null;
+    const best = solveShot(level, state.collected, { coarse: true, t0s, shieldHits: state.shieldHits });
+    if (!best || (best.res.collected.length === 0 && (best.res.shieldCracks || 0) === 0)) return null;
     return {
       angle: best.angle, power: best.power, t0: best.t0,
       collected: best.res.collected.length, outcome: best.res.outcome,
+      shieldCracks: best.res.shieldCracks || 0,
     };
   },
   challengeInfo: () => ({
@@ -1802,6 +1964,10 @@ window.__orbit = {
       levelTime,
       blackHoles: level ? levelBlackHoles(level).length : 0,
       movingPlanets: level ? level.planets.filter((p) => p.orbit).length : 0,
+      portals: level ? levelPortals(level).length : 0,
+      bouncePads: level ? levelBouncePads(level).length : 0,
+      shieldedTargets: level ? level.targets.filter((t) => targetHits(t) > 1).length : 0,
+      shieldHits: { ...state.shieldHits },
       planetPositions: planetMeshes.map((m) => [m.position.x, m.position.y]),
     };
   },
@@ -1824,6 +1990,9 @@ window.__orbit = {
     shockwavesActive: shockwaves.filter((s) => s.life > 0).length,
     particlesAlive: countAliveParticles(),
     slingshotCount,
+    portalCount,
+    bounceCount,
+    shieldHitCount,
   }),
   newGame: () => {
     save = defaultSave();

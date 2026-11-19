@@ -6,7 +6,7 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.8.0
+**Version:** v0.9.0
 
 ## How to play
 
@@ -27,6 +27,12 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 - **Moving planets** orbit a centre point (the faint ring shows the path).
   The trajectory preview follows them live, so time your launch for when
   the bend lines up.
+- **Portals** come in matching pairs (cyan, gold, or violet) — fly into
+  one and you exit its twin at the same speed, with a 0.6s cooldown so
+  you can't hop straight back. **Shielded targets** (white ring) take
+  two hits: the first cracks the shield, the second collects the star —
+  the crack persists across shots in the same attempt. **Bounce pads**
+  (lime) reflect the comet like a mirror, once per pad per shot.
 - Collect **every magenta target** before you run out of shots. Each
   collect fires a magenta shockwave ring and a particle burst; a win
   fires gold rings at every target.
@@ -37,7 +43,7 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 - Beat par for **3 stars** (par+1 = 2 stars, within budget = 1 star).
   Finishing a level unlocks the next one. Each level card and the HUD show
   the par and the exact star thresholds. The menu's campaign map tracks
-  the whole run — a progress bar (levels cleared, stars out of 24) and a
+  the whole run — a progress bar (levels cleared, stars out of 33) and a
   gold **NEXT** ring on the next uncompleted level. **My Stats** lists
   your best stars per level plus your daily best, endless run record, and
   how many shared seeds you've played. Running out of shots shows the
@@ -71,6 +77,9 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 | 6 | Gauntlet | 3 | 3 | 5 |
 | 7 | Event Horizon | 1 + 1 black hole | 1 | 3 |
 | 8 | Carousel | 1 moving | 2 | 4 |
+| 9 | Portal Hop | 1 + 1 portal pair | 2 | 3 |
+| 10 | Shielded Stars | 2 | 2 shielded | 4 |
+| 11 | Bounce House | 1 + 1 bounce pad | 2 | 3 |
 
 ## Controls
 
@@ -91,6 +100,11 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
   same gravity law with a much larger mu and an event-horizon swallow
   radius; planets with an `orbit` travel a circle around a centre point on
   the level clock, and the preview / flight / visuals all read that clock.
+  Portals teleport the comet between twins (velocity preserved, 0.6s pair
+  cooldown), bounce pads reflect velocity about the radial normal once per
+  pad per shot, and shielded targets track remaining hits in the flight
+  state so a crack persists across shots — the solver scores cracks so it
+  plans crack-then-collect lines.
 - One antialiased renderer (pixel ratio capped at 2), one PerspectiveCamera
   on a separate rig so screen shake never moves colliders.
 - Pooled particles, trauma-based screen shake with hit-stop, Web Audio synth
@@ -135,7 +149,7 @@ python3 -m http.server 8123
 ```sh
 npm test            # smoke tests + bot harness
 node tests/smoke.js # physics / levels / save round-trip (281 checks)
-node tests/bot.js   # auto-aim solver plays all 8 levels + 3 generated
+node tests/bot.js   # auto-aim solver plays all 11 levels + 3 generated
                     # challenge levels to completion
 node tests/render-check.js  # headless Chromium: menu renders, a run starts,
                             # a launch moves the comet, zero console errors;
