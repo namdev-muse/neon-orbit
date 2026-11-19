@@ -10,9 +10,10 @@ import {
   defaultSave, serializeSave, parseSave, totalStars,
   dateSeed, dateKey, dailyDifficulty, endlessDifficulty, parseSeedParam,
   generateLevel, registerGeneratedLevel, solveShot,
+  clampZoom, isTapGesture, focusStep,
 } from './physics.js';
 
-export const VERSION = '0.7.0';
+export const VERSION = '0.8.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -72,9 +73,10 @@ function loadSettings() {
       muted: !!raw.muted,
       volume: typeof raw.volume === 'number' ? Math.max(0, Math.min(1, raw.volume)) : 0.6,
       shake: typeof raw.shake === 'number' ? Math.max(0, Math.min(1, raw.shake)) : 1,
+      zoom: clampZoom(raw.zoom),
     };
   } catch {
-    return { muted: false, shake: 1 };
+    return { muted: false, shake: 1, zoom: 1 };
   }
 }
 function persistSettings() {
@@ -84,6 +86,21 @@ function persistSettings() {
 let save = loadSave();
 let settings = loadSettings();
 state.unlocked = save.unlocked;
+
+// Camera zoom (Block 8): 1 = the whole playfield fits, >1 zooms in, <1
+// pulls back. Persisted with the other settings; fitCamera applies it.
+let cameraZoom = settings.zoom;
+function setZoom(v) {
+  cameraZoom = clampZoom(v);
+  settings.zoom = cameraZoom;
+  persistSettings();
+  fitCamera();
+  updateZoomLabel();
+}
+function updateZoomLabel() {
+  const el = $('zoom-label');
+  if (el) el.textContent = `${Math.round(cameraZoom * 100)}%`;
+}
 
 // ---------------------------------------------------------------- audio
 // Two buses under one master gain: SFX (short, punchy) and music (quiet,
@@ -606,10 +623,25 @@ function feedback(kind, x, y) {
 // ---------------------------------------------------------------- DOM helpers
 const $ = (id) => document.getElementById(id);
 const OVERLAYS = ['menu', 'howto', 'complete', 'failed', 'pause', 'stats'];
+// Keyboard-only play: opening an overlay focuses its primary button, so
+// Enter / Space immediately does the obvious thing (Play, Got it, Next,
+// Retry, Resume, Back) without a mouse.
+const OVERLAY_PRIMARY = {
+  menu: 'btn-play',
+  howto: 'btn-howto-close',
+  complete: 'btn-next',
+  failed: 'btn-retry',
+  pause: 'btn-resume',
+  stats: 'btn-stats-close',
+};
 
 function showOverlay(id) {
   for (const o of OVERLAYS) $(o).classList.toggle('hidden', o !== id);
   if (!id) for (const o of OVERLAYS) $(o).classList.add('hidden');
+  if (id && OVERLAY_PRIMARY[id]) {
+    const el = $(OVERLAY_PRIMARY[id]);
+    if (el && !el.disabled) el.focus({ preventScroll: true });
+  }
 }
 function showOnly(id) {
   if (id) showOverlay(id);
@@ -982,6 +1014,9 @@ function beginLevel(level, mode) {
   updateHUD();
   $('hud').classList.remove('hidden');
   showOnly(null);
+  // A hidden button keeps its focus in some browsers; drop it so the
+  // keyboard shortcuts (Space to launch, arrows to aim) own the keys.
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   ensureAudio();
   startMusic();
 }
@@ -1285,8 +1320,22 @@ const raycaster = new THREE.Raycaster();
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 const ndc = new THREE.Vector2();
 let dragging = false;
+let dragPointerId = null;
 let lastDragDist = 0; // world units pulled; a plain click must not launch
 let dragStartDist = 0; // pull distance when the drag began (fine-aim anchor)
+// Tap-to-launch: the press point/time of the current drag. A press that
+// lifts within TAP_MAX_MS having moved under TAP_MAX_PX is a tap — it
+// launches with the current aim instead of re-aiming.
+let downX = 0;
+let downY = 0;
+let downTime = 0;
+// Pinch zoom: every live pointer on the canvas, by pointerId. Two live
+// pointers mean a pinch — the aim drag is cancelled and the finger
+// distance drives the camera zoom until one finger lifts.
+const activePointers = new Map();
+let pinching = false;
+let pinchStartDist = 0;
+let pinchStartZoom = 1;
 
 function worldFromEvent(e) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -1321,32 +1370,86 @@ function aimFromPointer(e) {
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (state.phase !== 'aim') return;
   ensureAudio();
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePointers.size === 2) {
+    // Second finger down: pinch-zoom takes over, the aim drag is off.
+    dragging = false;
+    pinching = true;
+    const [a, b] = [...activePointers.values()];
+    pinchStartDist = Math.hypot(a.x - b.x, a.y - b.y);
+    pinchStartZoom = cameraZoom;
+    return;
+  }
+  if (activePointers.size > 2) return; // ignore extra fingers
   dragging = true;
-  renderer.domElement.setPointerCapture(e.pointerId);
+  dragPointerId = e.pointerId;
+  downX = e.clientX;
+  downY = e.clientY;
+  downTime = performance.now();
+  // Synthetic pointer events (tests) have no active pointer to capture;
+  // a failed capture must never break the drag.
+  try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* no active pointer */ }
   const level = levelById(state.levelId);
   const p = worldFromEvent(e);
   dragStartDist = p ? Math.hypot(p.x - level.pad.x, p.y - level.pad.y) : 0;
-  aimFromPointer(e);
+  // Aim updates on the first move, not on press — so a tap never re-aims
+  // before it launches with the current aim.
 });
 renderer.domElement.addEventListener('pointermove', (e) => {
-  if (!dragging || state.phase !== 'aim') return;
+  if (!activePointers.has(e.pointerId)) return;
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (pinching && activePointers.size >= 2) {
+    const [a, b] = [...activePointers.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchStartDist > 0 && d > 0) setZoom(pinchStartZoom * (d / pinchStartDist));
+    return;
+  }
+  if (!dragging || e.pointerId !== dragPointerId || state.phase !== 'aim') return;
   aimFromPointer(e);
 });
 renderer.domElement.addEventListener('pointerup', (e) => {
-  if (!dragging) return;
+  const wasPinching = pinching;
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinching = false;
+  // A pinch ending never launches — lifting a finger is not a shot.
+  if (wasPinching) { dragging = false; return; }
+  if (!dragging || e.pointerId !== dragPointerId) return;
   dragging = false;
   state.fineAim = false;
   if (state.phase !== 'aim') return;
+  // Quick tap, barely moved: launch with the current aim.
+  const duration = performance.now() - downTime;
+  const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (isTapGesture(duration, moved)) {
+    launch();
+    return;
+  }
   aimFromPointer(e);
   if (lastDragDist >= 1.5 && state.aimPower >= 0.08) launch();
 });
-renderer.domElement.addEventListener('pointercancel', () => { dragging = false; });
+renderer.domElement.addEventListener('pointercancel', (e) => {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinching = false;
+  if (e.pointerId === dragPointerId) dragging = false;
+});
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+// Mouse wheel zooms the camera in and out (zoom buttons and pinch do the
+// same on touch). preventDefault stops the page scrolling under the game.
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  setZoom(cameraZoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12));
+}, { passive: false });
 
 window.addEventListener('keydown', (e) => {
   // Typing a seed in the menu input must not trigger game hotkeys.
   if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
   if (e.key === 'm' || e.key === 'M') { toggleMute(); return; }
+  // Escape closes the how-to and stats overlays back to the menu.
+  if (e.key === 'Escape' && (state.phase === 'howto' || state.phase === 'stats')) {
+    if (state.phase === 'howto') $('btn-howto-close').click();
+    else $('btn-stats-close').click();
+    return;
+  }
   if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
     if (state.phase === 'paused') resumeGame();
     else pauseGame();
@@ -1356,6 +1459,41 @@ window.addEventListener('keydown', (e) => {
     if (state.phase === 'aim' || state.phase === 'fly' || state.phase === 'complete' || state.phase === 'failed') {
       ensureAudio();
       restartCurrent();
+    }
+    return;
+  }
+  // + / - zoom the camera in and out (same as the wheel, pinch and HUD
+  // zoom buttons).
+  if (e.key === '+' || e.key === '=') { setZoom(cameraZoom * 1.25); return; }
+  if (e.key === '-' || e.key === '_') { setZoom(cameraZoom / 1.25); return; }
+  // Enter does the obvious thing for the current screen — Play on the
+  // menu, launch while aiming, Next on completion, Retry on failure,
+  // Resume when paused. A focused button already handles Enter natively,
+  // so this only fires when nothing interactive has focus.
+  if (e.key === 'Enter') {
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'BUTTON' || ae.tagName === 'A')) return;
+    if (state.phase === 'menu') $('btn-play').click();
+    else if (state.phase === 'howto') $('btn-howto-close').click();
+    else if (state.phase === 'stats') $('btn-stats-close').click();
+    else if (state.phase === 'complete') $('btn-next').click();
+    else if (state.phase === 'failed') $('btn-retry').click();
+    else if (state.phase === 'paused') $('btn-resume').click();
+    else if (state.phase === 'aim') launch();
+    e.preventDefault();
+    return;
+  }
+  // Arrow keys on the menu move focus between the enabled level buttons
+  // (wrapping around the grid) so the whole campaign map is navigable
+  // without a mouse.
+  if (state.phase === 'menu'
+    && (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    const btns = [...document.querySelectorAll('.level-btn')].filter((b) => !b.disabled);
+    if (btns.length) {
+      const idx = btns.indexOf(document.activeElement);
+      const delta = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : -1;
+      btns[focusStep(idx, btns.length, delta)].focus();
+      e.preventDefault();
     }
     return;
   }
@@ -1396,10 +1534,12 @@ function wireButtons() {
     ensureAudio();
     sfx.click();
     renderStats();
+    state.phase = 'stats';
     showOnly('stats');
   });
   $('btn-stats-close').addEventListener('click', () => {
     sfx.click();
+    state.phase = 'menu';
     showOnly('menu');
   });
   $('btn-howto-close').addEventListener('click', () => {
@@ -1479,6 +1619,11 @@ function wireButtons() {
   $('btn-mute-menu').addEventListener('click', () => { ensureAudio(); toggleMute(); });
   $('btn-mute-hud').addEventListener('click', () => { ensureAudio(); toggleMute(); });
   $('btn-mute-pause').addEventListener('click', () => { ensureAudio(); toggleMute(); });
+  // Camera zoom (HUD − / + buttons; wheel, pinch and the + / - keys do
+  // the same thing). Each tap steps 25% in or out.
+  $('btn-zoom-in').addEventListener('click', () => { ensureAudio(); sfx.click(); setZoom(cameraZoom * 1.25); });
+  $('btn-zoom-out').addEventListener('click', () => { ensureAudio(); sfx.click(); setZoom(cameraZoom / 1.25); });
+  updateZoomLabel();
   // Volume sliders (menu + pause) share one persisted setting; moving
   // either updates the master gain live and syncs the other slider.
   for (const suffix of ['menu', 'pause']) {
@@ -1505,7 +1650,8 @@ function fitCamera() {
   camera.aspect = aspect;
   const halfFovTan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
   const need = PLAYFIELD_RADIUS + 2;
-  const z = Math.max(need / halfFovTan, need / (halfFovTan * aspect));
+  // Zoom in (factor > 1) pulls the camera closer than the fitted distance.
+  const z = Math.max(need / halfFovTan, need / (halfFovTan * aspect)) / cameraZoom;
   camera.position.set(0, 0, z);
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -1616,6 +1762,10 @@ window.__orbit = {
   selectLevel: (id) => { ensureAudio(); startLevel(id); },
   aim: (angle, power) => { if (state.phase === 'aim') setAim(angle, power); },
   launch: () => launch(),
+  // Camera zoom (Block 8): current factor and a clamped setter for the
+  // render check (wheel / pinch / buttons / keys all funnel through it).
+  zoom: () => cameraZoom,
+  setZoom: (v) => setZoom(v),
   // Challenge-mode hooks (bot harness / render check).
   playDaily: () => { ensureAudio(); startDaily(); },
   playSeed: (raw) => { ensureAudio(); return startSeed(raw); },

@@ -19,6 +19,7 @@ html, body {
   padding: 0;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   background: var(--bg);
   color: var(--text);
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
@@ -239,6 +240,15 @@ html, body {
 
 .icon-btn:hover { border-color: var(--cyan); }
 
+/* ---------- Camera zoom label (HUD, between the − / + buttons) ---------- */
+.zoom-label {
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 42px;
+  text-align: center;
+  pointer-events: none;
+}
+
 /* ---------- Level select ---------- */
 .level-select {
   display: grid;
@@ -370,4 +380,30 @@ html, body {
   #aim-readout { font-size: 12px; bottom: 10px; max-width: 92vw; white-space: normal; text-align: center; }
   .power-meter { width: 130px; bottom: 10px; left: 10px; }
   .level-select { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Very small phones: tighter type, smaller buttons, HUD stays on one row. */
+@media (max-width: 400px) {
+  .panel { padding: 16px 14px; }
+  .panel h1 { font-size: 28px; }
+  .panel h2 { font-size: 22px; }
+  .btn { font-size: 15px; padding: 11px 14px; }
+  #hud { font-size: 12px; padding: 6px 8px; }
+  #hud .hud-left, #hud .hud-mid, #hud .hud-right { gap: 6px; }
+  .icon-btn { padding: 6px 8px; font-size: 12px; }
+  .zoom-label { min-width: 36px; font-size: 12px; }
+  .power-meter { width: 110px; }
+  .howto-list { font-size: 14px; }
+}
+
+/* Short landscape screens (phones held sideways): shrink the panel so
+   the menu fits without scrolling the title off the top. */
+@media (max-height: 480px) {
+  .panel { padding: 14px 18px; max-height: 96vh; }
+  .panel h1 { font-size: 26px; margin-bottom: 2px; }
+  .tagline { display: none; }
+  .version { margin-bottom: 10px; }
+  .btn { padding: 9px 14px; margin: 5px 0; }
+  #aim-readout { bottom: 8px; }
+  .power-meter { bottom: 8px; }
 }

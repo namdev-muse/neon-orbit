@@ -6,16 +6,20 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.7.0
+**Version:** v0.8.0
 
 ## How to play
 
 - **Drag** back from the comet and **release** to launch — like a slingshot.
   The trajectory preview shows fading gold dots plus a pulsing end marker
   coloured by the predicted outcome (gold = target hit, red = planet crash,
-  cyan = flies out), and the readout states the prediction.
+  cyan = flies out), and the readout states the prediction. A quick
+  **tap / click** launches with the current aim instead of re-aiming.
 - Hold **Shift** while aiming for fine adjustments (quarter-size steps, also
   with the arrow keys). The HUD power meter shows launch power live.
+- **Zoom:** the mouse wheel, a two-finger pinch, the HUD − / + buttons, or
+  the + / − keys zoom the camera (0.6×–2×, persisted). The zoom never
+  moves a collider — only the camera distance changes.
 - Planets **bend** your flight with gravity. Use the bend, don't fight it.
 - **Black holes** pull much harder and **swallow** any comet that crosses
   their event horizon — arc around them, never through them. A straight shot
@@ -70,10 +74,13 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 ## Controls
 
-- Mouse / touch: drag to aim, release to launch
+- Mouse / touch: drag to aim, release to launch · tap / click to launch
+  with the current aim · pinch to zoom, mouse wheel to zoom
 - Hold Shift while aiming for fine adjustments
-- Arrow keys: adjust angle and power (Shift = fine) · Space: launch
-- R: retry level · P: pause · M: mute
+- Arrow keys: adjust angle and power (Shift = fine) · Space or Enter: launch
+- Enter confirms on menus (Play, Next, Retry, Resume) · arrow keys move
+  between level buttons · Esc closes How to Play / My Stats
+- R: retry level · P: pause · M: mute · + / −: zoom
 
 ## Tech
 
@@ -112,7 +119,9 @@ and the shot is lost. Beat par for 3 stars and unlock the next level.
   chain; daily and per-seed bests persist in the save.
 - Best stars per level and settings persist in localStorage (`nor-stars`,
   `nor-settings`). The save also records the endless run record
-  (`endlessBest`: most rounds cleared in one run).
+  (`endlessBest`: most rounds cleared in one run). The camera zoom
+  persists in `nor-settings` too, and every overlay focuses its primary
+  button so the whole game is playable from the keyboard alone.
 
 ## Run locally
 
@@ -125,11 +134,13 @@ python3 -m http.server 8123
 
 ```sh
 npm test            # smoke tests + bot harness
-node tests/smoke.js # physics / levels / save round-trip (259 checks)
+node tests/smoke.js # physics / levels / save round-trip (281 checks)
 node tests/bot.js   # auto-aim solver plays all 8 levels + 3 generated
                     # challenge levels to completion
 node tests/render-check.js  # headless Chromium: menu renders, a run starts,
-                            # a launch moves the comet, zero console errors
+                            # a launch moves the comet, zero console errors;
+                            # tap-to-launch, keyboard-only play, camera zoom
+                            # and the 390x844 phone viewport are covered too
 ```
 
 ## License

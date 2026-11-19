@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.6.0';
+export const VERSION = '0.8.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -658,4 +658,33 @@ export function parseSave(json) {
 
 export function totalStars(save) {
   return Object.values(save.stars).reduce((a, b) => a + b, 0);
+}
+
+// --- camera zoom + touch / keyboard input helpers (Block 8) ---
+// Zoom is a multiplier on the fitted camera distance: 1 = whole playfield
+// fits, 2 = twice as close, 0.6 = pulled right back. Clamped so the
+// playfield can never be zoomed out of view or into a single planet.
+export const ZOOM_MIN = 0.6;
+export const ZOOM_MAX = 2.0;
+export function clampZoom(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return 1;
+  return Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, v));
+}
+
+// Tap-to-launch: a press that lifts within 300ms having moved under 14
+// screen pixels is a tap, not a drag — it launches with the current aim
+// instead of re-aiming. Anything slower or further is a drag-aim.
+export const TAP_MAX_MS = 300;
+export const TAP_MAX_PX = 14;
+export function isTapGesture(durationMs, movedPx) {
+  return durationMs <= TAP_MAX_MS && movedPx <= TAP_MAX_PX;
+}
+
+// Roving focus for the level grid: arrow keys move between enabled level
+// buttons and wrap around the ends. From "no focus" (-1) a forward step
+// lands on the first button, a backward step on the last.
+export function focusStep(current, count, delta) {
+  if (count <= 0) return -1;
+  if (current < 0) return delta >= 0 ? 0 : count - 1;
+  return (((current + delta) % count) + count) % count;
 }
