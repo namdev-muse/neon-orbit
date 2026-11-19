@@ -251,3 +251,42 @@ items #23, #43, #38 (features_done 14 → 17/60).
   and closes it, burns level 1's last shot to reach the failed screen
   (stats "Shots used: 4 / 4 · Par 2 · Best on this level: ★★★") and
   returns via Level Select — all with zero console errors.
+
+## Block 8 — 2026-11-20 05:00 Asia/Bangkok (v0.8.0)
+
+Touch, keyboard-only play, responsive + camera zoom — backlog items
+#40, #41, #42 (features_done 17 → 20/60).
+
+- **Touch controls (#40):** a quick tap (under 300 ms, under 14 px of
+  movement) now launches with the current aim instead of doing nothing,
+  so touch players can tap to shoot. Drag-aim only starts on the first
+  move, so a tap never re-aims before it fires. A second finger cancels
+  the aim drag and starts a pinch (see #42); extra fingers are ignored.
+  `overscroll-behavior: none` stops pull-to-refresh fighting the game,
+  and pointer capture is wrapped in try/catch so synthetic pointer
+  events can never break a drag.
+- **Keyboard-only play (#41):** Enter does the obvious thing on every
+  screen — Play on the menu, launch while aiming, Next on completion,
+  Retry on failure, Resume when paused (a focused button still handles
+  Enter natively, so nothing double-fires). Arrow keys move focus
+  between the enabled level buttons on the menu, wrapping around the
+  grid. Escape closes How to Play and My Stats. Every overlay focuses
+  its primary button on open, and starting a level blurs the hidden
+  menu button so Space always owns the launch. Found while testing:
+  the stats overlay never set `state.phase` (it stayed `menu`), so
+  Escape/Enter there did nothing — fixed by tracking `stats` as a real
+  phase and restoring `menu` on close.
+- **Responsive + camera zoom (#42):** the camera zooms 0.6×–2× via the
+  mouse wheel, a two-finger pinch, the HUD − / + buttons (with a live
+  % label), or the + / − keys; the factor is clamped in `physics.js`
+  (`clampZoom`) and persists in `nor-settings`. Small screens get a
+  400 px pass (tighter type and buttons) and a short-landscape pass
+  (the tagline hides, the panel shrinks so the menu fits).
+- Tests: smoke grew to 281 checks (zoom clamp, tap-gesture windows,
+  roving-focus wrap). The render check now asserts the whole Block 8
+  flow — Enter starts the game, arrows adjust aim, Space launches, P
+  pauses with Resume focused, Escape closes My Stats, menu arrows wrap
+  focus to Carousel, wheel / buttons / keys zoom with 0.6–2.0 clamping,
+  a real touchscreen tap launches, a synthetic pinch-out zooms 1 →
+  1.42 without launching, and a 390×844 viewport has no horizontal
+  overflow with a 2-column grid — all with zero console errors.
