@@ -17,6 +17,12 @@ import {
   MUSIC_STYLES, musicStyleById, nextMusicStyleId,
   flashAllowed, FLASH_MIN_INTERVAL_MS,
   GRAVITY_ASSIST_POINTS, gravityAssistPoints,
+  ORB_POINTS, ORB_RADIUS, levelOrbs, orbPoints, orbRadius,
+  FUEL_MAX, FUEL_BURN_RATE, THRUST_ACCEL, FUEL_ORB_REFILL, THRUST_CRUISE_SPEED,
+  fuelCost, canThrust, thrustPolicyFor, solveShotThrust, solveLevelThrust, solveShotThrustTop,
+  UPGRADES, upgradeById, upgradeUnlocked, loadoutMultipliers, activeLoadout,
+  THRUST_UPGRADE_MULT, TANK_UPGRADE_MULT,
+  levelBoostPads, boostPadRadius, BOOST_PAD_REFILL, BOOST_PAD_KICK, BOOST_PAD_RADIUS,
 } from '../physics.js';
 
 let passed = 0, failed = 0;
@@ -28,8 +34,8 @@ function check(name, cond) {
 function approx(a, b, eps = 1e-9) { return Math.abs(a - b) <= eps; }
 
 // --- level definitions ---
-check('12 levels defined', LEVELS.length === 12);
-check('level ids are 1..12 in order', LEVELS.every((l, i) => l.id === i + 1));
+check('6 dense levels defined', LEVELS.length === 6);
+check('level ids are 1..6 in order', LEVELS.every((l, i) => l.id === i + 1));
 check('every level has a name', LEVELS.every((l) => typeof l.name === 'string' && l.name.length > 0));
 check('every level has a hint', LEVELS.every((l) => typeof l.hint === 'string' && l.hint.length > 0));
 check('every level has a pad inside the playfield',
@@ -102,25 +108,30 @@ check('moving planets never sweep over a target or the pad',
     return l.targets.every((t) => clear(t.x, t.y, t.r))
       && clear(l.pad.x, l.pad.y, 1.5);
   })));
-check('level 7 has a black hole', levelBlackHoles(LEVELS[6]).length === 1);
-check('level 8 has a moving planet', levelHasMovingPlanets(LEVELS[7]));
-check('level 9 has one portal pair', levelPortals(LEVELS[8]).length === 2
-  && (LEVELS[8].portals[0].pair ?? 0) === (LEVELS[8].portals[1].pair ?? 0));
-check('level 10 has two shielded targets',
-  LEVELS[9].targets.length === 2 && LEVELS[9].targets.every((t) => targetHits(t) === 2));
-check('level 11 has one bounce pad', levelBouncePads(LEVELS[10]).length === 1);
-check('level 12 has two moving targets',
-  LEVELS[11].targets.length === 2 && levelHasMovingTargets(LEVELS[11])
-  && levelMovingTargets(LEVELS[11]).length === 2);
-check('levels 1-11 have no moving targets',
-  LEVELS.slice(0, 11).every((l) => !levelHasMovingTargets(l)));
-check('levels 1-8 have no portals, bounce pads or shielded targets',
-  LEVELS.slice(0, 8).every((l) => levelPortals(l).length === 0
-    && levelBouncePads(l).length === 0
+// v2 level identity: every level has its own theme (disc colour +
+// nebula tint) and its own mechanic — no two levels look or play alike
+// (audit fix: levels 1-3 used to be identical).
+check('every level has a distinct theme', LEVELS.every((l) => l.theme
+  && typeof l.theme.disc === 'string' && typeof l.theme.tint === 'string')
+  && new Set(LEVELS.map((l) => l.theme.disc)).size === LEVELS.length);
+check('every level has >= 2 planets', LEVELS.every((l) => l.planets.length >= 2));
+check('every level has >= 2 targets', LEVELS.every((l) => l.targets.length >= 2));
+check('level 1 has two targets in different lob zones', LEVELS[0].targets.length === 2);
+check('level 4 has a black hole', levelBlackHoles(LEVELS[3]).length === 1);
+check('level 5 has a moving planet', levelHasMovingPlanets(LEVELS[4]));
+check('level 6 has one portal pair', levelPortals(LEVELS[5]).length === 2
+  && (LEVELS[5].portals[0].pair ?? 0) === (LEVELS[5].portals[1].pair ?? 0));
+check('level 6 has a black hole and one shielded target',
+  levelBlackHoles(LEVELS[5]).length === 1
+  && LEVELS[5].targets.some((t) => targetHits(t) === 2));
+check('level 6 has four targets', LEVELS[5].targets.length === 4);
+check('levels 1-3 have no black holes, portals or shielded targets',
+  LEVELS.slice(0, 3).every((l) => levelBlackHoles(l).length === 0
+    && levelPortals(l).length === 0
     && l.targets.every((t) => targetHits(t) === 1)));
-check('levels 1-6 have no black holes or moving planets',
-  LEVELS.slice(0, 6).every((l) => levelBlackHoles(l).length === 0 && !levelHasMovingPlanets(l)));
-check('levelById finds level 4', levelById(4) && levelById(4).name === 'The Long Way');
+check('levels 1-4 have no moving planets',
+  LEVELS.slice(0, 4).every((l) => !levelHasMovingPlanets(l)));
+check('levelById finds level 4', levelById(4) && levelById(4).name === 'Event Horizon');
 check('levelById returns null for unknown id', levelById(99) === null);
 check('shot budget is par + 2', LEVELS.every((l) => shotBudget(l) === l.par + 2));
 
@@ -141,21 +152,22 @@ check('star thresholds match the star rule for every level',
 check('star thresholds for par 2 are 2/3/4',
   JSON.stringify(starThresholds(2)) === JSON.stringify({ three: 2, two: 3, one: 4 }));
 check('level complete when all targets collected',
-  isLevelComplete(LEVELS[2], [0, 1]) === true);
+  isLevelComplete(LEVELS[2], [0, 1, 2]) === true);
 check('level not complete with targets left',
   isLevelComplete(LEVELS[2], [0]) === false);
 
-// --- trajectory preview prediction ---
+// --- trajectory preview (v2: a short stub, no oracle) ---
 {
-  check('physics version is 0.17.0', VERSION === '0.17.0');
+  check('physics version is 2.1.0', VERSION === '2.1.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
-  check('preview of the level 1 line predicts a target hit',
-    (hit.outcome === 'collected' || hit.outcome === 'partial') && hit.collected.length === 1);
+  // Audit fix: the default aim must NOT collect anything — a plain
+  // click on the pad never solves a level in v2. The stub shows the
+  // first second of flight and ends without a verdict.
+  check('preview of the level 1 default aim collects nothing',
+    hit.collected.length === 0);
   check('preview records trajectory points starting at the pad',
     hit.points.length > 10 && hit.points[0][0] === lvl.pad.x && hit.points[0][1] === lvl.pad.y);
-  check('preview end sits on the collected target',
-    Math.hypot(hit.end.x - lvl.targets[0].x, hit.end.y - lvl.targets[0].y) < lvl.targets[0].r + 1);
   const crashLevel = { pad: { x: -10, y: 0 }, planets: [{ x: 0, y: 0, r: 2, mu: 10 }], targets: [] };
   const crash = previewShot(crashLevel, 0, 0.5);
   check('preview of a head-on shot predicts a crash', crash.outcome === 'crash');
@@ -231,10 +243,15 @@ check('level not complete with targets left',
 // --- reaching a target = collect ---
 {
   const lvl = LEVELS[0];
-  const res = simulateLaunch(lvl, 0, 0.55);
-  check('level 1 near-straight shot collects the target',
-    res.collected.length === 1 && (res.outcome === 'collected' || res.outcome === 'partial'));
-  const already = simulateLaunch(lvl, 0, 0.55, [0]);
+  // The thrust plan's shot, flown with the thrust policy, collects both
+  // targets — flying is the skill, not just aiming.
+  const plan = solveLevelThrust(lvl, 1);
+  const res = simulateLaunch(lvl, plan.lines[0].angle, plan.lines[0].power, [],
+    { record: false, thrustPolicy: thrustPolicyFor(lvl, []) });
+  check('level 1 thrust-flown shot collects both targets',
+    res.collected.length === 2 && res.outcome === 'collected');
+  const already = simulateLaunch(lvl, plan.lines[0].angle, plan.lines[0].power, [0, 1],
+    { record: false, thrustPolicy: thrustPolicyFor(lvl, [0, 1]) });
   check('already-collected targets are not collected again', already.collected.length === 0);
 }
 
@@ -293,16 +310,16 @@ check('level not complete with targets left',
     holePrev.outcome === 'swallowed');
 
   // Moving planets make the same launch time-dependent.
-  const lvl8 = LEVELS[7];
-  const a = simulateLaunch(lvl8, 0.2, 0.7, [], { record: true, t0: 0 });
-  const b = simulateLaunch(lvl8, 0.2, 0.7, [], { record: true, t0: 3 });
+  const lvl5 = LEVELS[4];
+  const a = simulateLaunch(lvl5, 0.2, 0.7, [], { record: true, t0: 0 });
+  const b = simulateLaunch(lvl5, 0.2, 0.7, [], { record: true, t0: 3 });
   check('same launch at a different level time flies a different path',
     JSON.stringify(a.points) !== JSON.stringify(b.points));
-  const a2 = simulateLaunch(lvl8, 0.2, 0.7, [], { record: true, t0: 0 });
+  const a2 = simulateLaunch(lvl5, 0.2, 0.7, [], { record: true, t0: 0 });
   check('same launch at the same level time is deterministic',
     JSON.stringify(a.points) === JSON.stringify(a2.points));
-  const pA = previewShot(lvl8, 0.2, 0.7, [], 0);
-  const pB = previewShot(lvl8, 0.2, 0.7, [], 3);
+  const pA = previewShot(lvl5, 0.2, 0.7, [], 0);
+  const pB = previewShot(lvl5, 0.2, 0.7, [], 3);
   check('preview follows the launch time for moving planets',
     JSON.stringify(pA.points) !== JSON.stringify(pB.points));
 }
@@ -339,11 +356,11 @@ check('level not complete with targets left',
   const st = launchState(LEVELS[0], 0, 0.5);
   check('launch state starts with an empty slingshot ledger', Array.isArray(st.slingshotPlanets) && st.slingshotPlanets.length === 0);
 
-  // The verified Level 4 line (-20deg, power 0.3) grazes the planet
+  // The verified Level 4 line (24deg, power 0.55) grazes the planet
   // inside the band while collecting — the render check's slingshot line.
   {
     const lvl = LEVELS[3];
-    const s = launchState(lvl, (-20 * Math.PI) / 180, 0.3);
+    const s = launchState(lvl, (24 * Math.PI) / 180, 0.55);
     const collected = [];
     const newly = [];
     let min = Infinity;
@@ -384,11 +401,12 @@ check('level not complete with targets left',
   check('endless difficulty is the round number', endlessDifficulty(1) === 1 && endlessDifficulty(5) === 5);
   check('endless difficulty never drops below 1', endlessDifficulty(0) === 1);
 
-  // The solver: the shared grid search the bot and the generator use.
-  const solved = solveShot(LEVELS[0], []);
-  check('solver finds a collecting shot on level 1', solved && solved.res.collected.length === 1);
+  // The thrust solver: the shared grid search the bot and the render
+  // check use.
+  const solved = solveShotThrust(LEVELS[0], [], {});
+  check('thrust solver finds a collecting shot on level 1', solved && solved.res.collected.length === 2);
   const plan = solveLevel(LEVELS[5], shotBudget(LEVELS[5]));
-  check('solver completes level 6 within budget', !!plan && plan.shots <= shotBudget(LEVELS[5]));
+  check('ballistic solver completes level 6 within budget', !!plan && plan.shots <= shotBudget(LEVELS[5]));
   check('solver plan lines are valid angles/powers',
     !!plan && plan.lines.every((l) => l.angle >= 0 && l.angle < Math.PI * 2 && l.power >= 0.05 && l.power <= 1));
   const unsolvable = solveLevel(
@@ -455,7 +473,7 @@ check('level not complete with targets left',
   check('save round-trips unlocked level', back.unlocked === 3);
   check('total stars sums correctly', totalStars(back) === 5);
   check('garbage save text falls back to defaults', parseSave('not json').unlocked === 1);
-  check('save clamps unlocked into range', parseSave('{"unlocked":99}').unlocked === 12);
+  check('save clamps unlocked into range', parseSave('{"unlocked":99}').unlocked === 6);
   check('save drops stars for unknown levels',
     Object.keys(parseSave('{"stars":{"99":3}}').stars).length === 0);
   check('save drops out-of-range star counts',
@@ -630,34 +648,18 @@ check('level not complete with targets left',
       previewFresh.collected.length === 0);
   }
 
-  // The solver completes all three new levels within budget, with the
-  // portal and bounce lines actually using the new mechanics.
-  for (const level of LEVELS.slice(8)) {
-    const plan = solveLevel(level, shotBudget(level));
-    check(`solver completes level ${level.id} "${level.name}" within budget`,
-      !!plan && plan.shots <= shotBudget(level));
-    if (plan) {
-      check(`solver earns at least 1 star on level ${level.id}`,
-        starsForShots(plan.shots, level.par) >= 1);
-    }
-  }
+  // The thrust solver completes level 6 (portals + shielded target +
+  // black hole) within par, and its two shots together collect all four
+  // targets — including the shielded one, which takes two hits across
+  // the two shots.
   {
-    const plan9 = solveLevel(LEVELS[8], shotBudget(LEVELS[8]));
-    const usesPortal = plan9 && plan9.lines.some((l) => {
-      const res = simulateLaunch(LEVELS[8], l.angle, l.power, [], { record: false, t0: l.t0 });
-      return res.portalUses >= 1;
-    });
-    check('level 9 solver plan uses the portal', !!usesPortal);
-    const plan11 = solveLevel(LEVELS[10], shotBudget(LEVELS[10]));
-    const usesBounce = plan11 && plan11.lines.some((l) => {
-      const res = simulateLaunch(LEVELS[10], l.angle, l.power, [], { record: false, t0: l.t0 });
-      return res.bounces >= 1;
-    });
-    check('level 11 solver plan uses the bounce pad', !!usesBounce);
-    // Level 10 needs at least 4 shots: two shielded targets, two hits each.
-    const plan10 = solveLevel(LEVELS[9], shotBudget(LEVELS[9]));
-    check('level 10 solver plan takes 4 shots (two hits per shielded target)',
-      !!plan10 && plan10.shots === 4);
+    const plan6 = solveLevelThrust(LEVELS[5], LEVELS[5].par);
+    check('thrust solver completes level 6 "Grand Tour" within par',
+      !!plan6 && plan6.shots <= LEVELS[5].par);
+    check('level 6 thrust plan collects all four targets across its shots',
+      !!plan6 && plan6.lines.reduce((n, l) => n + l.collected, 0) === 4);
+    check('level 6 thrust plan earns 3 stars at par',
+      !!plan6 && starsForShots(plan6.shots, LEVELS[5].par) === 3);
   }
 }
 
@@ -677,8 +679,8 @@ check('level not complete with targets left',
     approx(Math.hypot(targetPosAt(mover, 1.7).x - 10, targetPosAt(mover, 1.7).y), 2, 1e-6));
   check('orbiting target position is deterministic for the same t',
     JSON.stringify(targetPosAt(mover, 3.7)) === JSON.stringify(targetPosAt(mover, 3.7)));
-  check('level 12 has two moving targets, level 1 has none',
-    levelHasMovingTargets(LEVELS[11]) && !levelHasMovingTargets(LEVELS[0]));
+  check('level 5 has a moving planet, level 1 has none',
+    levelHasMovingPlanets(LEVELS[4]) && !levelHasMovingPlanets(LEVELS[0]));
 
   // A launch must meet the target where it is, not where it started:
   // the comet (speed 11) reaches x=13 at ~1.18s, and the target is at
@@ -699,39 +701,31 @@ check('level not complete with targets left',
   check('preview follows the launch time for moving targets',
     pA.collected.length === 1 && pB.collected.length === 0);
 
-  // The solver completes level 12 within budget, timing its launches.
-  const plan12 = solveLevel(LEVELS[11], shotBudget(LEVELS[11]));
-  check('solver completes level 12 "Moving Stars" within budget',
-    !!plan12 && plan12.shots <= shotBudget(LEVELS[11]));
-  if (plan12) {
-    check('solver earns at least 1 star on level 12',
-      starsForShots(plan12.shots, LEVELS[11].par) >= 1);
-    check('solver plan on level 12 uses a nonzero launch time (waits for the drift)',
-      plan12.lines.some((l) => l.t0 > 0));
+  // The thrust solver completes level 5 (moving planet) within par,
+  // timing its launch for when the bend lines up.
+  const plan5 = solveLevelThrust(LEVELS[4], LEVELS[4].par);
+  check('thrust solver completes level 5 "Carousel" within par',
+    !!plan5 && plan5.shots <= LEVELS[4].par);
+  if (plan5) {
+    check('thrust solver earns 3 stars on level 5',
+      starsForShots(plan5.shots, LEVELS[4].par) === 3);
+    check('level 5 thrust plan waits for the moving planet (nonzero launch time)',
+      plan5.lines.some((l) => l.t0 > 0));
   }
 
-  // Difficulty tuning: par is the solver's minimal shot count + 1 slack
-  // shot (minimum 2), except level 10 whose par 4 is its designed
-  // minimum (two hits per shielded target). Level 6's old slow lob
-  // (63deg, power 0.25) collected all three targets; the spread-out,
-  // smaller targets break it.
-  check('retuned pars: L2=2, L4=2, L5=3, L6=3, L7=2, L8=3, L12=2',
-    LEVELS[1].par === 2 && LEVELS[3].par === 2 && LEVELS[4].par === 3
-    && LEVELS[5].par === 3 && LEVELS[6].par === 2 && LEVELS[7].par === 3
-    && LEVELS[11].par === 2);
-  check('unchanged pars: L1=2, L3=3, L9=3, L10=4, L11=3',
-    LEVELS[0].par === 2 && LEVELS[2].par === 3 && LEVELS[8].par === 3
-    && LEVELS[9].par === 4 && LEVELS[10].par === 3);
-  check('every level is still 3-starred by the solver at its new par',
-    LEVELS.every((l) => {
-      const plan = solveLevel(l, shotBudget(l));
-      return !!plan && starsForShots(plan.shots, l.par) === 3;
-    }));
+  // Difficulty tuning (v2): par is the thrust solver's shot count — the
+  // bot must FLY to clear a level in par, never just aim. Ballistics
+  // alone need more shots (see the anti-slop gate in the v2 section).
+  // The old slow lob (63deg, power 0.25) collected nothing on level 6:
+  // the targets sit in different lob zones now.
+  check('v2 pars: L1=1, L2=2, L3=2, L4=2, L5=2, L6=2',
+    LEVELS[0].par === 1 && LEVELS[1].par === 2 && LEVELS[2].par === 2
+    && LEVELS[3].par === 2 && LEVELS[4].par === 2 && LEVELS[5].par === 2);
   {
     const lob = simulateLaunch(LEVELS[5], (63 * Math.PI) / 180, 0.25);
-    check('level 6 slow lob no longer collects all three targets', lob.collected.length < 3);
-    const plan6 = solveLevel(LEVELS[5], shotBudget(LEVELS[5]));
-    check('level 6 solver now needs 2 shots', !!plan6 && plan6.shots === 2);
+    check('level 6 slow lob collects nothing (no free multi-collect)', lob.collected.length === 0);
+    const plan6 = solveLevelThrust(LEVELS[5], LEVELS[5].par);
+    check('level 6 thrust solver clears it in par (2 shots)', !!plan6 && plan6.shots === 2);
   }
 
   // Time Attack: five levels, one 4:00 clock, M:SS display.
@@ -925,19 +919,22 @@ check('level not complete with targets left',
 
 // --- Block 16: achievements + stats (#48 save versioning, achievements) ---
 {
-  // The achievement table: 14 entries, unique ids, every entry has a
-  // name, a description and an icon.
-  check('14 achievements defined', ACHIEVEMENTS.length === 14);
+  // The achievement table: 11 entries, unique ids, every entry has a
+  // name, a description and an icon. (v2: daily-grind, deep-space and
+  // zen-master are gone — those modes are dormant until rebuilt.)
+  check('11 achievements defined', ACHIEVEMENTS.length === 11);
   check('achievement ids are unique',
     new Set(ACHIEVEMENTS.map((a) => a.id)).size === ACHIEVEMENTS.length);
   check('every achievement has a name, description and icon',
     ACHIEVEMENTS.every((a) => a.name.length > 0 && a.desc.length > 0 && a.icon.length > 0));
 
-  // A fresh save earns nothing and starts at schema version 2 with
+  // A fresh save earns nothing and starts at schema version 4 with
   // empty lifetime stats and no achievements.
   check('fresh save unlocks no achievements',
     checkAchievements(defaultSave()).length === 0);
-  check('default save is schema version 2', defaultSave().version === SAVE_VERSION && SAVE_VERSION === 2);
+  check('default save is schema version 4', defaultSave().version === SAVE_VERSION && SAVE_VERSION === 4);
+  check('default save starts with both ship upgrades off',
+    JSON.stringify(defaultSave().upgrades) === JSON.stringify({ thrust: false, tank: false }));
   check('default save has empty lifetime stats',
     JSON.stringify(defaultStats()) === JSON.stringify({ shots: 0, collects: 0, crashes: 0, slingshots: 0, portals: 0, bounces: 0, wins: 0, fails: 0, oneShotClears: 0, lastShotWins: 0, dailyWins: 0 }));
   check('default save has no achievements', defaultSave().achievements.length === 0);
@@ -949,36 +946,28 @@ check('level not complete with targets left',
   check('first win fires on 1 win', earned((s) => { s.stats.wins = 1; }).includes('first-win'));
   check('one-shot fires on a 1-shot clear', earned((s) => { s.stats.oneShotClears = 1; }).includes('one-shot'));
   check('triple star fires on a 3-star level', earned((s) => { s.stars = { 1: 3 }; }).includes('triple-star'));
-  check('halfway fires at 6 cleared levels',
-    earned((s) => { s.stars = { 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1 }; }).includes('halfway'));
-  check('grand tour fires at 12 cleared levels',
-    earned((s) => { s.stars = { 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 9: 1, 10: 1, 11: 1, 12: 1 }; }).includes('grand-tour'));
-  check('constellation fires at 36 stars',
-    earned((s) => { s.stars = { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3, 9: 3, 10: 3, 11: 3, 12: 3 }; }).includes('constellation'));
+  check('halfway fires at 3 cleared levels',
+    earned((s) => { s.stars = { 1: 1, 2: 1, 3: 1 }; }).includes('halfway'));
+  check('grand tour fires at 6 cleared levels',
+    earned((s) => { s.stars = { 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1 }; }).includes('grand-tour'));
+  check('constellation fires at 18 stars',
+    earned((s) => { s.stars = { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3 }; }).includes('constellation'));
   check('gravity dancer fires at 10 slingshots', earned((s) => { s.stats.slingshots = 10; }).includes('slingshot-10'));
   check('down to the wire fires on a last-shot win', earned((s) => { s.stats.lastShotWins = 1; }).includes('last-shot'));
   check('gate crasher fires on 1 portal hop', earned((s) => { s.stats.portals = 1; }).includes('gate-crasher'));
-  check('daily grind fires on 1 daily win', earned((s) => { s.stats.dailyWins = 1; }).includes('daily-grind'));
-  check('deep space fires at endless best 5', earned((s) => { s.endlessBest = 5; }).includes('deep-space'));
-  check('zen master fires at zen best 10', earned((s) => { s.zenBest = 10; }).includes('zen-master'));
-  // Thresholds are exact: 9 slingshots, endless 4 and zen 9 earn nothing.
+  // Thresholds are exact: 9 slingshots earn nothing.
   check('slingshot threshold is exact at 10',
     !earned((s) => { s.stats.slingshots = 9; }).includes('slingshot-10'));
-  check('deep space threshold is exact at 5',
-    !earned((s) => { s.endlessBest = 4; }).includes('deep-space'));
-  check('zen master threshold is exact at 10',
-    !earned((s) => { s.zenBest = 9; }).includes('zen-master'));
   // Already-unlocked achievements never re-fire, and a perfect campaign
   // save earns the whole set at once.
   check('already-unlocked achievements do not re-fire',
     (() => { const s = defaultSave(); s.stats.shots = 1; s.achievements = ['first-launch']; return checkAchievements(s).length === 0; })());
-  check('a perfect campaign save earns all 14 achievements',
+  check('a perfect campaign save earns all 11 achievements',
     (() => {
       const s = defaultSave();
-      s.stats = { shots: 5, collects: 20, crashes: 2, slingshots: 10, portals: 1, bounces: 1, wins: 12, fails: 1, oneShotClears: 1, lastShotWins: 1, dailyWins: 1 };
-      s.stars = { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3, 9: 3, 10: 3, 11: 3, 12: 3 };
-      s.endlessBest = 5; s.zenBest = 10;
-      return checkAchievements(s).length === 14;
+      s.stats = { shots: 5, collects: 12, crashes: 2, slingshots: 10, portals: 1, bounces: 1, wins: 6, fails: 1, oneShotClears: 1, lastShotWins: 1, dailyWins: 0 };
+      s.stars = { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3 };
+      return checkAchievements(s).length === 11;
     })());
   // checkAchievements is pure: it never mutates the save.
   check('checkAchievements does not mutate the save',
@@ -1063,6 +1052,412 @@ check('level not complete with targets left',
     })());
   check('v1 save migrates best bonus to empty',
     Object.keys(parseSave('{"stars":{"1":3}}').bestBonus).length === 0);
+}
+
+// --- v2 Block 1: fuel orbs (#12) + mid-flight thrust (the new core) ---
+{
+  // Orb pricing: 50 by default, custom `points` clamped to 10..500.
+  check('orb points default to 50 and clamp custom values to 10..500',
+    ORB_POINTS === 50 && orbPoints({}) === 50 && orbPoints({ points: 150 }) === 150
+    && orbPoints({ points: 5 }) === 10 && orbPoints({ points: 999 }) === 500
+    && orbPoints({ points: NaN }) === 50 && orbPoints(null) === 50);
+  check('orb radius defaults to 0.9 and rejects bad values',
+    ORB_RADIUS === 0.9 && orbRadius({}) === 0.9 && orbRadius({ r: 1.2 }) === 1.2
+    && orbRadius({ r: -1 }) === 0.9 && orbRadius({ r: NaN }) === 0.9);
+  // Feedback tiers: orb and thrust are small events (0.10-0.20 trauma,
+  // no hit-stop) so a pickup or a burn never shakes the camera like a
+  // crash.
+  const small = FEEDBACK_TIERS.small;
+  check('orb + thrust feedback sits in the small tier with no hit-stop',
+    FEEDBACK.orb && FEEDBACK.orb.trauma >= small.traumaMin && FEEDBACK.orb.trauma <= small.traumaMax
+    && FEEDBACK.orb.hitStop === 0
+    && FEEDBACK.thrust && FEEDBACK.thrust.trauma >= small.traumaMin && FEEDBACK.thrust.trauma <= small.traumaMax
+    && FEEDBACK.thrust.hitStop === 0);
+  // Level definitions: every campaign level has 1-2 orbs, the zen level
+  // has 2, and every orb is inside the playfield and clear of the pad,
+  // planets, targets, black holes, portals and bounce pads.
+  const orbClear = (level) => levelOrbs(level).every((o) => {
+    if (o.x * o.x + o.y * o.y >= PLAYFIELD_RADIUS * PLAYFIELD_RADIUS) return false;
+    if (Math.hypot(o.x - level.pad.x, o.y - level.pad.y) < 3) return false;
+    if (level.targets.some((t) => Math.hypot(o.x - t.x, o.y - t.y) < t.r + ORB_RADIUS + 0.5)) return false;
+    if (level.planets.some((p) => Math.hypot(o.x - p.x, o.y - p.y) < p.r + ORB_RADIUS + 0.5)) return false;
+    if (levelBlackHoles(level).some((b) => Math.hypot(o.x - b.x, o.y - b.y) < b.r + ORB_RADIUS + 0.5)) return false;
+    if (levelPortals(level).some((p) => Math.hypot(o.x - p.x, o.y - p.y) < p.r + ORB_RADIUS + 0.5)) return false;
+    if (levelBouncePads(level).some((p) => Math.hypot(o.x - p.x, o.y - p.y) < p.r + ORB_RADIUS + 0.5)) return false;
+    // A moving planet must never sweep over an orb mid-flight.
+    if (level.planets.some((p) => p.orbit
+      && Math.abs(Math.hypot(o.x, o.y) - p.orbit.radius) < p.r + ORB_RADIUS + 0.5)) return false;
+    return true;
+  });
+  check('every campaign level has 1-3 fuel orbs',
+    LEVELS.every((l) => levelOrbs(l).length >= 1 && levelOrbs(l).length <= 3));
+  check('every campaign orb is placed clear of everything it could overlap', LEVELS.every(orbClear));
+  check('zen sandbox has 2 orbs, both clear', levelOrbs(zenLevel()).length === 2 && orbClear(zenLevel()));
+  // launchState carries the attempt's banked orbs (copied, never shared)
+  // and a full fuel tank.
+  check('launchState copies banked orbs and starts with a full tank',
+    (() => {
+      const banked = [0];
+      const s = launchState(LEVELS[0], 0, 0.5, 0, {}, banked);
+      banked.push(1);
+      return s.orbsCollected.length === 1 && s.orbsCollected[0] === 0
+        && s.fuel === FUEL_MAX && s.fuelUsed === 0 && s.thrustTime === 0;
+    })());
+  // Orb mechanics on a synthetic level: a straight shot through an orb
+  // banks +50 once, and a later shot with it banked never re-collects.
+  const orbLevel = {
+    id: 999, name: 'Orb Test', par: 2,
+    pad: { x: -14, y: 0 },
+    planets: [{ x: 0, y: 8, r: 2, mu: 10, color: 0x7c3aed }],
+    targets: [{ x: 14, y: 0, r: 1.6 }],
+    orbs: [{ x: 0, y: 0 }, { x: 6, y: 0, points: 150 }],
+  };
+  const collectOrbs = (level, angle, power, banked) => {
+    const state = launchState(level, angle, power, 0, {}, banked);
+    const collected = [];
+    let steps = 0;
+    let lastEv = null;
+    while (!state.done && steps < 2000) {
+      const newly = [];
+      const ev = stepFlight(state, level, SUBSTEP, collected, newly);
+      steps++;
+      if (ev && ev.type === 'orb') lastEv = ev;
+      if (ev && (ev.type === 'crash' || ev.type === 'lost' || ev.type === 'timeout')) break;
+    }
+    return { state, lastEv, steps };
+  };
+  check('flying through an orb fires an orb event and banks it',
+    (() => {
+      const { state, lastEv } = collectOrbs(orbLevel, 0, 0.5, []);
+      return lastEv && lastEv.type === 'orb'
+        && state.orbsCollected.length === 2;
+    })());
+  check('an orb banked this attempt never fires again on a later shot',
+    (() => {
+      const { state, lastEv } = collectOrbs(orbLevel, 0, 0.5, [0, 1]);
+      return lastEv === null && state.orbsCollected.length === 2;
+    })());
+  check('simulateLaunch reports orbs banked and their points',
+    (() => {
+      const sim = simulateLaunch(orbLevel, 0, 0.5, [], { record: false });
+      return sim.orbs.length === 2 && sim.orbPoints === 200
+        && sim.orbsCollected.length === 2 && sim.outcome !== 'crash';
+    })());
+  check('previewShot reports the orbs a shot would bank',
+    (() => {
+      const prev = previewShot(orbLevel, 0, 0.5, [], 0, {}, []);
+      return prev.orbs.length === 2 && prev.orbPoints === 200;
+    })());
+  check('previewShot with banked orbs reports none left to bank',
+    (() => {
+      const prev = previewShot(orbLevel, 0, 0.5, [], 0, {}, [0, 1]);
+      return prev.orbs.length === 0 && prev.orbPoints === 0;
+    })());
+  // The thrust solver's first shot on level 1 collects both targets —
+  // the level is flyable, not just aimable.
+  check('level 1 thrust plan collects both targets in one shot',
+    (() => {
+      const plan = solveLevelThrust(LEVELS[0], LEVELS[0].par);
+      return plan && plan.shots === 1 && plan.lines[0].collected === 2;
+    })());
+  // Generated levels: at most one orb, placed clear like the handcrafted
+  // ones (the generator retries offsets until the clearances hold).
+  check('generated levels carry 0-1 orbs, always placed clear',
+    (() => {
+      for (const seed of [1, 7, 42, 777, 12345, 999999]) {
+        const g = generateLevel(seed, 2 + (seed % 3), 901);
+        if (levelOrbs(g).length > 1 || !orbClear(g)) return false;
+      }
+      return true;
+    })());
+  // Thrust: fuel-limited steering. Constants, cost, availability, the
+  // velocity change, the empty-tank refusal, and the orb refill.
+  check('fuel constants are 100 tank, 32/s burn, 15 accel, +40 per orb, cruise 9',
+    FUEL_MAX === 100 && FUEL_BURN_RATE === 32 && THRUST_ACCEL === 15
+    && FUEL_ORB_REFILL === 40 && THRUST_CRUISE_SPEED === 9);
+  check('fuelCost charges 32 per second of burn', fuelCost(1) === 32 && fuelCost(0.5) === 16 && fuelCost(0) === 0);
+  check('canThrust is true on a fresh flight, false with an empty tank or a finished flight',
+    (() => {
+      const fresh = launchState(LEVELS[0], 0, 0.5);
+      const empty = launchState(LEVELS[0], 0, 0.5);
+      empty.fuel = 0;
+      const done = launchState(LEVELS[0], 0, 0.5);
+      done.done = true;
+      return canThrust(fresh) && !canThrust(empty) && !canThrust(done) && !canThrust(null);
+    })());
+  check('thrust accelerates the comet toward the burn direction and drains fuel',
+    (() => {
+      const state = launchState(orbLevel, 0, 0.25);
+      const collected = [];
+      const vx0 = state.vx, vy0 = state.vy;
+      // Burn straight up (+y) for 0.5s: vy must rise, fuel must fall by 16.
+      for (let step = 0; step < 60; step++) {
+        stepFlight(state, orbLevel, SUBSTEP, collected, [], { x: 0, y: 1 });
+        if (state.done) break;
+      }
+      return state.vy > vy0 + 3 && Math.abs(state.vx - vx0) < 2
+        && Math.abs(state.fuel - (FUEL_MAX - 16)) < 1 && state.fuelUsed > 0
+        && state.thrustTime > 0.4;
+    })());
+  check('an empty tank burns nothing and changes nothing',
+    (() => {
+      // Two identical flights, one "burning" with an empty tank: gravity
+      // still acts on both, so the velocities must stay exactly equal —
+      // the burn adds nothing.
+      const run = (thrust) => {
+        const state = launchState(orbLevel, 0, 0.25);
+        state.fuel = 0;
+        stepFlight(state, orbLevel, SUBSTEP, [], [], thrust);
+        return state;
+      };
+      const a = run({ x: 0, y: 1 });
+      const b = run(null);
+      return a.fuel === 0 && b.fuel === 0
+        && Math.abs(a.vx - b.vx) < 1e-12 && Math.abs(a.vy - b.vy) < 1e-12
+        && a.fuelUsed === 0 && a.thrustTime === 0;
+    })());
+  check('flying through an orb refills the tank by 40 (clamped at 100)',
+    (() => {
+      const { state } = collectOrbs(orbLevel, 0, 0.5, []);
+      // The straight shot banks both orbs; the tank started full, so it
+      // stays clamped at 100 — prove the refill path instead with a
+      // half-empty tank on a second pass through the same level.
+      const s2 = launchState(orbLevel, 0, 0.5);
+      s2.fuel = 50;
+      const collected = [];
+      let ev = null;
+      for (let step = 0; step < 2000 && !s2.done; step++) {
+        const newly = [];
+        ev = stepFlight(s2, orbLevel, SUBSTEP, collected, newly);
+        if (ev && ev.type === 'orb') break;
+        if (ev && (ev.type === 'crash' || ev.type === 'lost' || ev.type === 'timeout')) break;
+      }
+      return state.orbsCollected.length === 2 && ev && ev.type === 'orb'
+        && Math.abs(s2.fuel - 90) < 1e-6;
+    })());
+  check('thrust steering pushes the comet measurably off the ballistic arc',
+    (() => {
+      // Two identical straight shots, one burning up for 0.5s: after 1s
+      // of flight the steered comet must be clearly above the plain one.
+      const run = (burn) => {
+        const state = launchState(orbLevel, 0, 0.25);
+        const collected = [];
+        for (let step = 0; step < 120; step++) {
+          stepFlight(state, orbLevel, SUBSTEP, collected, [],
+            burn && step < 60 ? { x: 0, y: 1 } : null);
+          if (state.done) break;
+        }
+        return state.y;
+      };
+      return run(true) > run(false) + 1;
+    })());
+  // Anti-slop gate (v2 quality gate): NO level may be cleared in par by
+  // pure ballistics — the bot must not one-shot the game by aiming
+  // alone — and EVERY level must be clearable in par with thrust.
+  // If either side fails, the level is not done.
+  check('anti-slop: ballistic solver clears NO level within par',
+    LEVELS.every((l) => solveLevel(l, l.par) === null));
+  check('anti-slop: thrust solver clears EVERY level within par',
+    LEVELS.every((l) => solveLevelThrust(l, l.par) !== null));
+}
+
+// --- v2 Block 2: ship upgrades (#1-2) + boost pads (#3) ---
+{
+  // Upgrade table: two upgrades, Ion Thrusters at 15 stars (+25% burn
+  // force), Big Tank at 30 stars (+30% fuel). Unknown ids never unlock.
+  check('two ship upgrades: thrust at 15 stars, tank at 30 stars',
+    UPGRADES.length === 2
+    && upgradeById('thrust').unlockStars === 15
+    && upgradeById('tank').unlockStars === 30
+    && upgradeById('thrust').name === 'Ion Thrusters'
+    && upgradeById('tank').name === 'Big Tank');
+  check('upgrade multipliers are +25% thrust and +30% tank',
+    THRUST_UPGRADE_MULT === 1.25 && TANK_UPGRADE_MULT === 1.30
+    && upgradeById('thrust').thrustMult === 1.25
+    && upgradeById('tank').tankMult === 1.30);
+  check('upgradeUnlocked gates on total stars and rejects unknown ids',
+    upgradeUnlocked('thrust', 15) && !upgradeUnlocked('thrust', 14)
+    && upgradeUnlocked('tank', 30) && !upgradeUnlocked('tank', 29)
+    && !upgradeUnlocked('warp', 99) && !upgradeUnlocked('thrust', NaN));
+  check('loadoutMultipliers sanitizes: null is the base ship, non-booleans and unknown keys ignored',
+    JSON.stringify(loadoutMultipliers(null)) === JSON.stringify({ thrust: 1, tank: 1 })
+    && JSON.stringify(loadoutMultipliers({ thrust: 'yes', tank: 1, warp: true })) === JSON.stringify({ thrust: 1, tank: 1 })
+    && JSON.stringify(loadoutMultipliers({ thrust: true, tank: true })) === JSON.stringify({ thrust: 1.25, tank: 1.3 }));
+  // activeLoadout: equipped AND unlocked — a flag above its unlock
+  // never flies, so a stale or hand-edited save cannot cheat. The
+  // campaign has 6 levels (18 stars max) in Block 2, so the 30-star
+  // Big Tank cannot unlock yet — it unlocks when levels 7-12 land in
+  // Block 6. The 30-star case below simulates that future campaign
+  // with extra star keys (totalStars just sums the save's stars).
+  const saveWith = (stars, upgrades) => {
+    const s = defaultSave();
+    s.stars = stars;
+    s.upgrades = upgrades;
+    return s;
+  };
+  check('activeLoadout applies only equipped AND unlocked upgrades',
+    JSON.stringify(activeLoadout(saveWith({ 1: 3, 2: 3, 3: 3, 4: 3, 5: 3 }, { thrust: true, tank: true })))
+      === JSON.stringify({ thrust: true, tank: false })
+    && JSON.stringify(activeLoadout(saveWith({ 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3 }, { thrust: true, tank: true })))
+      === JSON.stringify({ thrust: true, tank: false })
+    && JSON.stringify(activeLoadout(saveWith(
+      { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3, 9: 3, 10: 3 }, { thrust: true, tank: true })))
+      === JSON.stringify({ thrust: true, tank: true })
+    && JSON.stringify(activeLoadout(saveWith({ 1: 3, 2: 3, 3: 3, 4: 3 }, { thrust: true, tank: false })))
+      === JSON.stringify({ thrust: false, tank: false })
+    && JSON.stringify(activeLoadout(defaultSave())) === JSON.stringify({ thrust: false, tank: false }));
+  // The tank upgrade changes the flight: a Big Tank launch starts at
+  // 130 fuel, the base ship at 100.
+  check('Big Tank launch starts with a 130 fuel tank, base ship with 100',
+    launchState(LEVELS[0], 0, 0.5, 0, {}, [], { tank: true }).fuel === 130
+    && launchState(LEVELS[0], 0, 0.5, 0, {}, [], { tank: true }).fuelMax === 130
+    && launchState(LEVELS[0], 0, 0.5).fuel === 100
+    && launchState(LEVELS[0], 0, 0.5).fuelMax === 100);
+  // The thrust upgrade changes the burn: the same 0.5s hold pushes the
+  // upgraded comet 25% further up (15 -> 18.75 accel, no gravity here).
+  check('Ion Thrusters burn 25% harder than the base ship',
+    (() => {
+      const run = (loadout) => {
+        // No planets on this arc: use a bare level so gravity cannot
+        // muddy the delta-v comparison.
+        const bare = { ...LEVELS[0], planets: [], targets: [], orbs: [], boostPads: [] };
+        const s2 = launchState(bare, 0, 0, 0, {}, [], loadout);
+        for (let step = 0; step < 60; step++) {
+          stepFlight(s2, bare, SUBSTEP, [], [], { x: 0, y: 1 });
+        }
+        return s2.vy;
+      };
+      const base = run(null);
+      const up = run({ thrust: true });
+      return Math.abs(base - 7.5) < 0.01 && Math.abs(up - 9.375) < 0.01;
+    })());
+  // Boost pad constants: +50 fuel, +6 speed along the flight direction.
+  check('boost pad constants are +50 fuel and +6 speed, radius 1.4',
+    BOOST_PAD_REFILL === 50 && BOOST_PAD_KICK === 6 && BOOST_PAD_RADIUS === 1.4
+    && boostPadRadius({}) === 1.4 && boostPadRadius({ r: 2 }) === 2 && boostPadRadius({ r: -1 }) === 1.4);
+  check('boost feedback sits in the small tier with no hit-stop',
+    FEEDBACK.boost && FEEDBACK.boost.trauma >= FEEDBACK_TIERS.small.traumaMin
+    && FEEDBACK.boost.trauma <= FEEDBACK_TIERS.small.traumaMax && FEEDBACK.boost.hitStop === 0);
+  // A straight shot through a pad: the pad fires once (event type
+  // 'boost'), refills the tank by 50 and kicks the speed by ~6 — and a
+  // second pass through the same pad in the same shot does nothing.
+  check('flying through a boost pad refills +50 fuel and kicks speed +6, once per shot',
+    (() => {
+      const padLevel = {
+        id: 901, name: 'Pad Test', par: 1, pad: { x: -14, y: 0 },
+        planets: [], targets: [{ x: 18, y: 0, r: 1.6 }],
+        boostPads: [{ x: 0, y: 0 }],
+      };
+      const state = launchState(padLevel, 0, 0.5);
+      state.fuel = 50;
+      const speedBefore = Math.hypot(state.vx, state.vy);
+      const collected = [];
+      let ev = null;
+      let steps = 0;
+      while (!state.done && steps < 2000) {
+        const newly = [];
+        ev = stepFlight(state, padLevel, SUBSTEP, collected, newly);
+        steps++;
+        if (ev && ev.type === 'boost') break;
+        if (ev && (ev.type === 'crash' || ev.type === 'lost' || ev.type === 'timeout')) break;
+      }
+      if (!ev || ev.type !== 'boost') return false;
+      const speedAfter = Math.hypot(state.vx, state.vy);
+      // Refill: 50 + 50 = 100 (clamped at the 100 tank). Kick: 11 -> ~17.
+      if (Math.abs(state.fuel - 100) > 1e-6) return false;
+      if (Math.abs(speedAfter - speedBefore - BOOST_PAD_KICK) > 0.01) return false;
+      // The pad is spent: stepping on through it again fires nothing.
+      let secondBoost = false;
+      for (let i = 0; i < 600 && !state.done; i++) {
+        const newly = [];
+        const ev2 = stepFlight(state, padLevel, SUBSTEP, collected, newly);
+        if (ev2 && ev2.type === 'boost') secondBoost = true;
+        if (ev2 && (ev2.type === 'collect' || ev2.type === 'lost' || ev2.type === 'crash')) break;
+      }
+      return !secondBoost && state.boostedPads.length === 1;
+    })());
+  check('simulateLaunch reports boosts taken on the shot',
+    (() => {
+      const padLevel = {
+        id: 901, name: 'Pad Test', par: 1, pad: { x: -14, y: 0 },
+        planets: [], targets: [{ x: 18, y: 0, r: 1.6 }],
+        boostPads: [{ x: 0, y: 0 }],
+      };
+      const sim = simulateLaunch(padLevel, 0, 0.5);
+      return sim.boosts === 1 && sim.outcome === 'collected';
+    })());
+  // Placement: exactly one pad per campaign level, inside the
+  // playfield, overlapping nothing it could sit on top of — but pads
+  // ARE allowed to sit close to a planet or black hole (that is the
+  // risk/reward), so the clearance is overlap-only, not the orb margin.
+  const padClear = (level) => levelBoostPads(level).every((pad) => {
+    if (pad.x * pad.x + pad.y * pad.y >= PLAYFIELD_RADIUS * PLAYFIELD_RADIUS) return false;
+    if (Math.hypot(pad.x - level.pad.x, pad.y - level.pad.y) < 3) return false;
+    if (level.targets.some((t) => Math.hypot(pad.x - t.x, pad.y - t.y) < t.r + BOOST_PAD_RADIUS)) return false;
+    if (level.planets.some((p) => {
+      if (p.orbit) {
+        // A moving planet must never sweep over the pad: the closest
+        // its centre ever gets is |dist(pad, orbit centre) - radius|.
+        const d = Math.abs(Math.hypot(pad.x - p.orbit.cx, pad.y - p.orbit.cy) - p.orbit.radius);
+        return d < p.r + BOOST_PAD_RADIUS;
+      }
+      return Math.hypot(pad.x - p.x, pad.y - p.y) < p.r + BOOST_PAD_RADIUS;
+    })) return false;
+    if (levelBlackHoles(level).some((b) => Math.hypot(pad.x - b.x, pad.y - b.y) < b.r + BOOST_PAD_RADIUS)) return false;
+    if (levelPortals(level).some((p) => Math.hypot(pad.x - p.x, pad.y - p.y) < p.r + BOOST_PAD_RADIUS)) return false;
+    if (levelBouncePads(level).some((p) => Math.hypot(pad.x - p.x, pad.y - p.y) < p.r + BOOST_PAD_RADIUS)) return false;
+    if (levelOrbs(level).some((o) => Math.hypot(pad.x - o.x, pad.y - o.y) < ORB_RADIUS + BOOST_PAD_RADIUS)) return false;
+    return true;
+  });
+  check('every campaign level has exactly one boost pad', LEVELS.every((l) => levelBoostPads(l).length === 1));
+  check('every campaign boost pad is placed clear (overlap-free)', LEVELS.every(padClear));
+  // Save round-trip: upgrades persist, unknown ids are dropped, and a
+  // v3 save (no upgrades field) migrates with both upgrades off.
+  check('save round-trips equipped upgrades',
+    (() => {
+      const s = defaultSave();
+      s.stars = { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3 };
+      s.upgrades = { thrust: true, tank: false };
+      const back = parseSave(serializeSave(s));
+      return back.upgrades.thrust === true && back.upgrades.tank === false && back.version === SAVE_VERSION;
+    })());
+  check('save drops unknown upgrade ids and non-booleans',
+    (() => {
+      const s = defaultSave();
+      s.upgrades = { thrust: true, warp: true, tank: 'yes' };
+      const back = parseSave(serializeSave(s));
+      return back.upgrades.thrust === true && back.upgrades.tank === false && !('warp' in back.upgrades);
+    })());
+  check('v3 save migrates with both upgrades off',
+    (() => {
+      const back = parseSave(JSON.stringify({ version: 3, stars: { 1: 3 }, unlocked: 2 }));
+      return back.version === SAVE_VERSION && back.upgrades.thrust === false && back.upgrades.tank === false
+        && back.stars[1] === 3 && back.unlocked === 2;
+    })());
+  // Upgrades never break solvability: the thrust solver still clears
+  // every level in par with the full loadout equipped.
+  check('thrust solver clears EVERY level within par with full upgrades',
+    LEVELS.every((l) => solveLevelThrust(l, l.par, { loadout: { thrust: true, tank: true } }) !== null));
+  // Beam search (Block 2, #3): the thrust solver keeps distinct
+  // opening lines, so a greedy opener that strands the shielded star
+  // falls through to the next-best line instead of failing the level.
+  check('thrust solver returns distinct top opening lines for level 6',
+    (() => {
+      const tops = solveShotThrustTop(LEVELS[5], [], {}, 3);
+      if (tops.length < 2) return false;
+      const angleDiff = (a, b) => {
+        const d = Math.abs(a - b) % (Math.PI * 2);
+        return Math.min(d, Math.PI * 2 - d);
+      };
+      for (let i = 1; i < tops.length; i++) {
+        for (let j = 0; j < i; j++) {
+          const distinct = angleDiff(tops[i].angle, tops[j].angle) > (6 * Math.PI) / 180
+            || Math.abs(tops[i].power - tops[j].power) > 0.1;
+          if (!distinct) return false;
+        }
+      }
+      return true;
+    })());
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);
