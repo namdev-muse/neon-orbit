@@ -6,7 +6,7 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.14.0
+**Version:** v0.16.0
 
 ## Gameplay
 
@@ -58,7 +58,15 @@ Real captures from a headless-Chromium run of the live game
   the whole run — a progress bar (levels cleared, stars out of 36) and a
   gold **NEXT** ring on the next uncompleted level. **My Stats** lists
   your best stars per level plus your daily best, endless run record,
-  time attack best, and how many shared seeds you've played. Running out
+  time attack best, and how many shared seeds you've played. **My Stats**
+  also shows lifetime totals (shots launched, stars collected, shots lost,
+  slingshots, wins, fails) and how many of the 14 **achievements** you've
+  unlocked — first launch, one-shot clears, portal hops, a full 36-star
+  constellation and more, each toasted with a gold banner and a chime when
+  earned. Progress (stars, unlocks, bests, stats, achievements) is saved in
+  localStorage under a versioned schema, so it survives reloads and older
+  saves migrate forward; **Reset Progress** in My Stats wipes it all (two
+  clicks to confirm). Running out
   of shots shows the attempt stats (shots used vs budget, par, banked best) with Retry,
   Level Select, and Main Menu.
 

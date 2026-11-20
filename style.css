@@ -360,7 +360,52 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
 .stats-table th { color: var(--cyan); font-size: 12px; letter-spacing: 1px; text-transform: uppercase; }
 .stats-table .stats-stars { color: var(--gold); letter-spacing: 2px; white-space: nowrap; }
 .stats-totals { color: var(--gold); font-weight: 700; margin: 12px 0 4px; font-size: 15px; }
-.stats-challenge { color: var(--muted); margin: 4px 0 14px; font-size: 14px; }
+.stats-challenge { color: var(--muted); margin: 4px 0 4px; font-size: 14px; }
+.stats-lifetime { color: var(--muted); margin: 4px 0 4px; font-size: 14px; }
+.stats-achievements { color: var(--gold); margin: 4px 0 14px; font-size: 14px; }
+#btn-reset-save { margin: 0 8px 10px 0; }
+
+/* ---------- Achievement unlock toast ---------- */
+.achievement-toast {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: min(92vw, 560px);
+  padding: 10px 18px;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a1206;
+  background: linear-gradient(90deg, #ffd166, #ffb347);
+  border: 2px solid #fff3c4;
+  border-radius: 10px;
+  box-shadow: 0 0 24px rgba(255, 209, 102, 0.55);
+  pointer-events: none;
+}
+
+/* ---------- Achievements overlay ---------- */
+.achievements-count { color: var(--gold); font-weight: 700; margin: 4px 0 12px; font-size: 15px; }
+.achievements-grid { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; text-align: left; }
+.achievement-row {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  grid-template-areas: "icon name state" "icon desc state";
+  column-gap: 10px;
+  align-items: center;
+  padding: 9px 12px;
+  border: 1px solid rgba(34, 211, 238, 0.22);
+  border-radius: 8px;
+  background: rgba(11, 6, 32, 0.6);
+  opacity: 0.6;
+}
+.achievement-row.unlocked { opacity: 1; border-color: var(--gold); box-shadow: 0 0 12px rgba(255, 209, 102, 0.25); }
+.achievement-icon { grid-area: icon; font-size: 20px; color: var(--gold); text-align: center; }
+.achievement-name { grid-area: name; font-weight: 700; font-size: 14px; }
+.achievement-desc { grid-area: desc; color: var(--muted); font-size: 13px; }
+.achievement-state { grid-area: state; font-size: 12px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+.achievement-row.unlocked .achievement-state { color: var(--gold); }
 
 /* ---------- Failed screen stats ---------- */
 .failed-stats { color: var(--muted); font-size: 14px; margin: 0 0 10px; }

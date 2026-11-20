@@ -1,4 +1,4 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.15.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.16.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
@@ -14,9 +14,10 @@ import {
   TIME_ATTACK_LEVEL_IDS, TIME_ATTACK_SECONDS, formatClock,
   clampZoom, isTapGesture, focusStep, createPerfGuard, PERF_LEVELS,
   slowMoScale, SLOW_MO_MS, zenLevel, ZEN_ID,
+  ACHIEVEMENTS, checkAchievements, defaultStats,
 } from './physics.js';
 
-export const VERSION = '0.15.0';
+export const VERSION = '0.16.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -282,6 +283,13 @@ const sfx = {
   unlock() {
     recordSfx('unlock');
     [784, 988, 1175, 1568].forEach((f, i) => tone(f, 0.2, 'sine', 0.13, null, i * 0.08));
+  },
+  // Achievement unlock: a bright two-note fanfare, distinct from the
+  // level-unlock chime so the render check can tell them apart.
+  achievement() {
+    recordSfx('achievement');
+    tone(1046, 0.14, 'sine', 0.14);
+    tone(1568, 0.22, 'sine', 0.14, null, 0.1);
   },
   // Two-tone warning when the next shot is the last one.
   lastShot() {
@@ -925,24 +933,29 @@ function feedback(kind, x, y) {
   if (!f) return;
   if (!settings.reduceMotion) addTrauma(f.trauma);
   if (f.hitStop > 0) hitStop(f.hitStop);
-  if (kind === 'launch') { sfx.launch(); }
+  if (kind === 'launch') { sfx.launch(); recordStat('shots'); }
   else if (kind === 'collect') {
     sfx.collect();
+    recordStat('collects');
     spawnBurst(x, y, 0, 0xff2d95, 26, 7, 0.7);
     spawnShockwave(x, y, 0xff2d95, 4.5, 0.7);
   } else if (kind === 'crash') {
     sfx.crash();
+    recordStat('crashes');
     spawnBurst(x, y, 0, 0xff6b35, 40, 9, 0.9);
     spawnShockwave(x, y, 0xff6b35, 6, 0.7);
   } else if (kind === 'lost') {
     sfx.lost();
+    recordStat('crashes');
     spawnBurst(x, y, 0, 0x22d3ee, 16, 5, 0.6);
   } else if (kind === 'swallowed') {
     sfx.swallow();
+    recordStat('crashes');
     spawnBurst(x, y, 0, 0xa855f7, 36, 8, 0.9);
     spawnShockwave(x, y, 0xa855f7, 5, 0.7);
   } else if (kind === 'slingshot') {
     slingshotCount++;
+    recordStat('slingshots');
     sfx.slingshot();
     spawnBurst(x, y, 0, 0xffd166, 14, 6, 0.5);
     // Near-miss slow-mo (#31): the bend reads better at 0.35x for a beat.
@@ -954,11 +967,13 @@ function feedback(kind, x, y) {
     }
   } else if (kind === 'portal') {
     portalCount++;
+    recordStat('portals');
     sfx.portal();
     spawnBurst(x, y, 0, 0x22d3ee, 20, 7, 0.6);
     spawnShockwave(x, y, 0x22d3ee, 4, 0.6);
   } else if (kind === 'bounce') {
     bounceCount++;
+    recordStat('bounces');
     sfx.bounce();
     spawnBurst(x, y, 0, 0x4ade80, 16, 6, 0.5);
     spawnShockwave(x, y, 0x4ade80, 3.5, 0.5);
@@ -971,9 +986,52 @@ function feedback(kind, x, y) {
   }
 }
 
+// ---------------------------------------------------------------- achievements (Block 16)
+// Lifetime stats live in save.stats; every event that matters funnels
+// through recordStat, which bumps the counter, checks for newly earned
+// achievements, toasts each one (gold banner, unlock chime, screen-reader
+// announcement) and persists. Toasts queue so a multi-unlock moment
+// (first launch + first star + first win on one good shot) shows each in
+// turn instead of overwriting. The toast is pointer-events: none so it
+// can never block a click, and it is plain text — no flash — so reduce
+// motion does not need to suppress it.
+let achievementToastQueue = [];
+let achievementToastTimer = 0;
+
+function recordStat(key, delta = 1) {
+  if (!save.stats) save.stats = defaultStats();
+  const next = (save.stats[key] || 0) + delta;
+  save.stats[key] = Math.max(0, Math.min(999999, next));
+  const newly = checkAchievements(save);
+  if (newly.length) {
+    for (const id of newly) save.achievements.push(id);
+    achievementToastQueue.push(...newly);
+    showNextAchievementToast();
+  }
+  persistSave();
+}
+
+function showNextAchievementToast() {
+  const el = $('achievement-toast');
+  if (!el || achievementToastTimer) return;
+  const id = achievementToastQueue.shift();
+  if (!id) return;
+  const ach = ACHIEVEMENTS.find((a) => a.id === id);
+  if (!ach) { showNextAchievementToast(); return; }
+  el.textContent = `Achievement unlocked — ${ach.icon} ${ach.name}: ${ach.desc}`;
+  el.classList.remove('hidden');
+  sfx.achievement();
+  announce(`Achievement unlocked — ${ach.name}. ${ach.desc}`);
+  achievementToastTimer = window.setTimeout(() => {
+    achievementToastTimer = 0;
+    el.classList.add('hidden');
+    if (achievementToastQueue.length) showNextAchievementToast();
+  }, 4000);
+}
+
 // ---------------------------------------------------------------- DOM helpers
 const $ = (id) => document.getElementById(id);
-const OVERLAYS = ['menu', 'howto', 'complete', 'failed', 'pause', 'stats'];
+const OVERLAYS = ['menu', 'howto', 'complete', 'failed', 'pause', 'stats', 'achievements'];
 // Keyboard-only play: opening an overlay focuses its primary button, so
 // Enter / Space immediately does the obvious thing (Play, Got it, Next,
 // Retry, Resume, Back) without a mouse.
@@ -984,6 +1042,7 @@ const OVERLAY_PRIMARY = {
   failed: 'btn-retry',
   pause: 'btn-resume',
   stats: 'btn-stats-close',
+  achievements: 'btn-achievements-close',
 };
 
 function showOverlay(id) {
@@ -1170,6 +1229,58 @@ function renderStats() {
     ` · Time Attack best: ${taBest ? `${taBest.stars}/15 stars in ${formatClock(taBest.seconds)}` : 'no full clear yet'}` +
     ` · Zen best: ${save.zenBest || 0} star${(save.zenBest || 0) === 1 ? '' : 's'} in one session` +
     ` · ${seedCount} seed${seedCount === 1 ? '' : 's'} played`;
+  // Lifetime stats (Block 16): every shot, collect, lost shot and trick
+  // ever recorded, plus how many of the 14 achievements are unlocked.
+  const s = save.stats || defaultStats();
+  $('stats-lifetime').textContent =
+    `Shots launched: ${s.shots || 0} · Stars collected: ${s.collects || 0}` +
+    ` · Shots lost: ${s.crashes || 0} · Slingshots: ${s.slingshots || 0}` +
+    ` · Levels won: ${s.wins || 0} · Levels failed: ${s.fails || 0}`;
+  $('stats-achievements').textContent =
+    `Achievements: ${(save.achievements || []).length} / ${ACHIEVEMENTS.length} unlocked`;
+}
+
+// Achievements overlay (Block 16): one row per achievement — gold when
+// unlocked, dimmed with its goal still shown when locked, so the list
+// doubles as a checklist of things left to do.
+function renderAchievements() {
+  const grid = $('achievements-grid');
+  grid.innerHTML = '';
+  const unlocked = new Set(save.achievements || []);
+  for (const ach of ACHIEVEMENTS) {
+    const row = document.createElement('div');
+    row.className = 'achievement-row' + (unlocked.has(ach.id) ? ' unlocked' : '');
+    const icon = document.createElement('span');
+    icon.className = 'achievement-icon';
+    icon.textContent = ach.icon;
+    const name = document.createElement('span');
+    name.className = 'achievement-name';
+    name.textContent = ach.name;
+    const desc = document.createElement('span');
+    desc.className = 'achievement-desc';
+    desc.textContent = ach.desc;
+    const stateEl = document.createElement('span');
+    stateEl.className = 'achievement-state';
+    stateEl.textContent = unlocked.has(ach.id) ? 'Unlocked ★' : 'Locked';
+    row.append(icon, name, desc, stateEl);
+    grid.appendChild(row);
+  }
+  $('achievements-count').textContent =
+    `${unlocked.size} / ${ACHIEVEMENTS.length} unlocked`;
+}
+
+// Reset progress (Block 16, #48): wipes stars, unlocks, bests, lifetime
+// stats and achievements back to a fresh save and re-renders the menu.
+// The button arms on first click and fires on the second within 5s, so a
+// stray tap can never erase a campaign.
+let resetArmedUntil = 0;
+function resetSave() {
+  save = defaultSave();
+  persistSave();
+  state.unlocked = save.unlocked;
+  renderLevelSelect();
+  renderStats();
+  announce('Progress reset — all stars, unlocks and achievements erased.');
 }
 
 // The Daily button shows today's date plus the best stars earned on it so
@@ -1802,6 +1913,13 @@ function completeLevel() {
       }
     }
   }
+  // Lifetime stats (Block 16): a win, a one-shot clear, a last-shot win
+  // and a daily win each feed the achievements (recordStat toasts any
+  // newly earned one and persists the save).
+  recordStat('wins');
+  if (state.shotsUsed === 1) recordStat('oneShotClears');
+  if (state.shotsUsed >= shotBudget(level)) recordStat('lastShotWins');
+  if (state.mode === 'daily') recordStat('dailyWins');
   persistSave();
   state.phase = 'complete';
   state.targetsRemaining = 0;
@@ -1860,6 +1978,7 @@ function completeLevel() {
 function failLevel(reason) {
   const level = levelById(state.levelId);
   state.phase = 'failed';
+  recordStat('fails');
   sfx.fail();
   let text = `${level.name}: out of shots with ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left. Try a different arc.`;
   if (state.mode === 'timeattack') {
@@ -2200,10 +2319,12 @@ window.addEventListener('keydown', (e) => {
   // Typing a seed in the menu input must not trigger game hotkeys.
   if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
   if (e.key === 'm' || e.key === 'M') { toggleMute(); return; }
-  // Escape closes the how-to and stats overlays back to the menu.
-  if (e.key === 'Escape' && (state.phase === 'howto' || state.phase === 'stats')) {
+  // Escape closes the how-to, stats and achievements overlays back to
+  // the menu.
+  if (e.key === 'Escape' && (state.phase === 'howto' || state.phase === 'stats' || state.phase === 'achievements')) {
     if (state.phase === 'howto') $('btn-howto-close').click();
-    else $('btn-stats-close').click();
+    else if (state.phase === 'stats') $('btn-stats-close').click();
+    else $('btn-achievements-close').click();
     return;
   }
   if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
@@ -2232,6 +2353,7 @@ window.addEventListener('keydown', (e) => {
     if (state.phase === 'menu') $('btn-play').click();
     else if (state.phase === 'howto') $('btn-howto-close').click();
     else if (state.phase === 'stats') $('btn-stats-close').click();
+    else if (state.phase === 'achievements') $('btn-achievements-close').click();
     else if (state.phase === 'complete') $('btn-next').click();
     else if (state.phase === 'failed') $('btn-retry').click();
     else if (state.phase === 'paused') $('btn-resume').click();
@@ -2297,6 +2419,37 @@ function wireButtons() {
     sfx.click();
     state.phase = 'menu';
     showOnly('menu');
+  });
+  // Achievements overlay (Block 16): the menu button opens the list,
+  // the close button returns to the menu.
+  $('btn-achievements').addEventListener('click', () => {
+    ensureAudio();
+    sfx.click();
+    renderAchievements();
+    state.phase = 'achievements';
+    showOnly('achievements');
+  });
+  $('btn-achievements-close').addEventListener('click', () => {
+    sfx.click();
+    state.phase = 'menu';
+    showOnly('menu');
+  });
+  // Reset Progress (Block 16, #48): first click arms the button, the
+  // second click within 5s wipes the whole save.
+  $('btn-reset-save').addEventListener('click', () => {
+    const btn = $('btn-reset-save');
+    if (performance.now() < resetArmedUntil) {
+      resetArmedUntil = 0;
+      btn.textContent = 'Reset Progress';
+      sfx.click();
+      resetSave();
+      return;
+    }
+    resetArmedUntil = performance.now() + 5000;
+    btn.textContent = 'Click again to erase all progress';
+    window.setTimeout(() => {
+      if (performance.now() >= resetArmedUntil) btn.textContent = 'Reset Progress';
+    }, 5100);
   });
   $('btn-howto-close').addEventListener('click', () => {
     ensureAudio();
@@ -2767,6 +2920,14 @@ window.__orbit = {
     osReduceMotion: (() => {
       try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
     })(),
+  }),
+  // Achievements state (Block 16) for the render check: the unlocked
+  // ids, the total, the lifetime stats and the save schema version.
+  achievementsState: () => ({
+    unlocked: [...(save.achievements || [])],
+    total: ACHIEVEMENTS.length,
+    stats: { ...(save.stats || defaultStats()) },
+    version: save.version,
   }),
   // Test-only corruption hook for the render check: 'flight' NaNs the
   // live flight state (the physics guard must end the shot cleanly),

@@ -42,6 +42,9 @@
 <!-- Screen-reader live region (#50): visually hidden, announced on every
      major event (level start, collect, lost shot, win, fail). -->
 <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
+<!-- Achievement unlock toast (Block 16): gold banner, pointer-events none
+     so it can never block a click; the screen reader hears it via sr-status. -->
+<div id="achievement-toast" class="achievement-toast hidden"></div>
 <div id="power-meter" class="power-meter hidden" aria-label="Shot power">
   <div id="power-fill"></div>
   <span id="power-label">Power 60%</span>
@@ -52,7 +55,7 @@
   <div class="panel">
     <h1>NEON ORBIT</h1>
     <p class="tagline">Slingshot your comet around planets. Collect every star.</p>
-    <p class="version">v0.15.0 &middot; Three.js 0.160.0</p>
+    <p class="version">v0.16.0 &middot; Three.js 0.160.0</p>
     <button id="btn-play" class="btn primary" type="button">Play</button>
     <button id="btn-daily" class="btn" type="button">Daily Orbit</button>
     <button id="btn-endless" class="btn" type="button">Endless Orbit</button>
@@ -64,6 +67,7 @@
     </div>
     <button id="btn-howto" class="btn" type="button">How to Play</button>
     <button id="btn-stats" class="btn" type="button">My Stats</button>
+    <button id="btn-achievements" class="btn" type="button">Achievements</button>
     <label class="slider-row">Volume
       <input id="volume-range-menu" type="range" min="0" max="100" value="60" aria-label="Volume">
       <span id="volume-value-menu">60%</span>
@@ -103,6 +107,7 @@
       <li><strong>Daily Orbit</strong> is one fresh puzzle every day — the same level for everyone. <strong>Endless Orbit</strong> keeps dealing harder levels until you run out of shots.</li>
       <li>Type a <strong>seed</strong> (or open a <strong>?seed=</strong> link) to replay the exact same generated level as a friend.</li>
       <li>Beat par for <strong>3 stars</strong>. Finish a level to unlock the next one.</li>
+      <li><strong>Achievements</strong> track your career — first launch, one-shot clears, portal hops, slingshots and more. Check them from the main menu.</li>
     </ul>
     <h3>Controls</h3>
     <ul class="howto-list">
@@ -151,7 +156,20 @@
     </table>
     <p id="stats-totals" class="stats-totals"></p>
     <p id="stats-challenge" class="stats-challenge"></p>
+    <p id="stats-lifetime" class="stats-lifetime"></p>
+    <p id="stats-achievements" class="stats-achievements"></p>
+    <button id="btn-reset-save" class="btn small" type="button">Reset Progress</button>
     <button id="btn-stats-close" class="btn primary" type="button">Back to Menu</button>
+  </div>
+</div>
+
+<!-- Achievements -->
+<div id="achievements" class="overlay hidden">
+  <div class="panel">
+    <h2>Achievements</h2>
+    <p id="achievements-count" class="achievements-count"></p>
+    <div id="achievements-grid" class="achievements-grid" aria-label="Achievements"></div>
+    <button id="btn-achievements-close" class="btn primary" type="button">Back to Menu</button>
   </div>
 </div>
 

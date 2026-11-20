@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.15.0';
+export const VERSION = '0.16.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -828,8 +828,103 @@ export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0, 
 }
 
 // ---------------------------------------------------------------- save data
+// Save schema version (Block 16, #48): v1 saves (no version field, no
+// stats/achievements) migrate forward on load — their stars, unlocks and
+// bests are kept, the new fields start empty. Bump this when the schema
+// changes and add a migration branch in parseSave.
+export const SAVE_VERSION = 2;
+
+// Lifetime counters (Block 16): every shot, collect, lost shot and trick
+// the player ever pulls, so achievements and My Stats can read them.
+// All counters are integers clamped to 0..999999 on load and on write.
+export function defaultStats() {
+  return {
+    shots: 0, collects: 0, crashes: 0, slingshots: 0, portals: 0,
+    bounces: 0, wins: 0, fails: 0, oneShotClears: 0, lastShotWins: 0,
+    dailyWins: 0,
+  };
+}
+const STAT_KEYS = Object.keys(defaultStats());
+const STAT_MAX = 999999;
+
 export function defaultSave() {
-  return { stars: {}, unlocked: 1, seenHowTo: false, daily: null, seedBest: {}, endlessBest: 0, timeAttackBest: null, zenBest: 0 };
+  return {
+    version: SAVE_VERSION, stars: {}, unlocked: 1, seenHowTo: false,
+    daily: null, seedBest: {}, endlessBest: 0, timeAttackBest: null,
+    zenBest: 0, stats: defaultStats(), achievements: [],
+  };
+}
+
+// Achievements (Block 16): 14 goals across the whole game. `check` reads
+// the save (stars, bests, lifetime stats) and returns true when the goal
+// is met; checkAchievements returns the newly earned ids — the ones met
+// but not yet recorded in save.achievements. Pure: it never mutates.
+export const ACHIEVEMENTS = [
+  { id: 'first-launch', icon: '☄', name: 'First Launch', desc: 'Launch your first comet.' },
+  { id: 'first-star', icon: '★', name: 'Star Catcher', desc: 'Collect your first target.' },
+  { id: 'first-win', icon: '✦', name: 'Orbit Cleared', desc: 'Complete your first level.' },
+  { id: 'one-shot', icon: '◎', name: 'Hole in One', desc: 'Complete a level in a single shot.' },
+  { id: 'triple-star', icon: '✪', name: 'Triple Star', desc: 'Earn 3 stars on any level.' },
+  { id: 'halfway', icon: '◐', name: 'Halfway Home', desc: 'Clear 6 campaign levels.' },
+  { id: 'grand-tour', icon: '◉', name: 'Grand Tour', desc: 'Clear all 12 campaign levels.' },
+  { id: 'constellation', icon: '✧', name: 'Constellation', desc: 'Earn all 36 campaign stars.' },
+  { id: 'slingshot-10', icon: '↻', name: 'Gravity Dancer', desc: 'Skim 10 slingshot near-misses.' },
+  { id: 'last-shot', icon: '♦', name: 'Down to the Wire', desc: 'Complete a level on your last shot.' },
+  { id: 'gate-crasher', icon: '◍', name: 'Gate Crasher', desc: 'Fly through a portal.' },
+  { id: 'daily-grind', icon: '☀', name: 'Daily Grind', desc: 'Complete a Daily Orbit.' },
+  { id: 'deep-space', icon: '∞', name: 'Deep Space', desc: 'Reach round 5 in Endless Orbit.' },
+  { id: 'zen-master', icon: '✿', name: 'Zen Master', desc: 'Collect 10 stars in one Zen session.' },
+];
+const ACHIEVEMENT_IDS = new Set(ACHIEVEMENTS.map((a) => a.id));
+
+function achievementMet(id, save) {
+  const stats = (save.stats && typeof save.stats === 'object') ? save.stats : {};
+  const num = (k) => (Number.isInteger(stats[k]) && stats[k] > 0 ? stats[k] : 0);
+  const cleared = LEVELS.filter((l) => (save.stars[l.id] || 0) > 0).length;
+  switch (id) {
+    case 'first-launch': return num('shots') >= 1;
+    case 'first-star': return num('collects') >= 1;
+    case 'first-win': return num('wins') >= 1;
+    case 'one-shot': return num('oneShotClears') >= 1;
+    case 'triple-star': return Object.values(save.stars || {}).some((s) => s === 3);
+    case 'halfway': return cleared >= 6;
+    case 'grand-tour': return cleared >= LEVELS.length;
+    case 'constellation': return totalStars(save) >= LEVELS.length * 3;
+    case 'slingshot-10': return num('slingshots') >= 10;
+    case 'last-shot': return num('lastShotWins') >= 1;
+    case 'gate-crasher': return num('portals') >= 1;
+    case 'daily-grind': return num('dailyWins') >= 1;
+    case 'deep-space': return Number.isInteger(save.endlessBest) && save.endlessBest >= 5;
+    case 'zen-master': return Number.isInteger(save.zenBest) && save.zenBest >= 10;
+    default: return false;
+  }
+}
+
+export function checkAchievements(save) {
+  const unlocked = Array.isArray(save.achievements) ? save.achievements : [];
+  const have = new Set(unlocked.filter((id) => ACHIEVEMENT_IDS.has(id)));
+  return ACHIEVEMENTS
+    .filter((a) => !have.has(a.id) && achievementMet(a.id, save))
+    .map((a) => a.id);
+}
+
+function sanitizeStats(raw) {
+  const stats = defaultStats();
+  if (raw && typeof raw === 'object') {
+    for (const k of STAT_KEYS) {
+      if (Number.isInteger(raw[k])) stats[k] = Math.max(0, Math.min(STAT_MAX, raw[k]));
+    }
+  }
+  return stats;
+}
+
+function sanitizeAchievements(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const id of raw) {
+    if (typeof id === 'string' && ACHIEVEMENT_IDS.has(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
 }
 
 // stars: { levelId: 0..3 }, unlocked: highest unlocked level id.
@@ -839,6 +934,9 @@ export function defaultSave() {
 // timeAttackBest: { stars: 0..15, seconds: 0..240 } — best full clear of
 // Time Attack (most stars, then fastest); null until the first full clear.
 // zenBest: most stars collected in one Zen Sandbox session (0..999).
+// version: save schema version (SAVE_VERSION); v1 saves have no field and
+// migrate on load. stats: lifetime counters (defaultStats). achievements:
+// unlocked achievement ids, validated against ACHIEVEMENTS on load/write.
 export function serializeSave(save) {
   const daily = save.daily && typeof save.daily.date === 'string'
     && /^\d{4}-\d{2}-\d{2}$/.test(save.daily.date)
@@ -859,6 +957,7 @@ export function serializeSave(save) {
     }
   }
   return JSON.stringify({
+    version: SAVE_VERSION,
     stars: save.stars || {},
     unlocked: Math.max(1, Math.min(LEVELS.length, save.unlocked || 1)),
     seenHowTo: !!save.seenHowTo,
@@ -869,6 +968,8 @@ export function serializeSave(save) {
     timeAttackBest,
     zenBest: Number.isInteger(save.zenBest)
       ? Math.max(0, Math.min(999, save.zenBest)) : 0,
+    stats: sanitizeStats(save.stats),
+    achievements: sanitizeAchievements(save.achievements),
   });
 }
 
@@ -914,6 +1015,13 @@ export function parseSave(json) {
       && raw.timeAttackBest.seconds >= 0 && raw.timeAttackBest.seconds <= TIME_ATTACK_SECONDS) {
       save.timeAttackBest = { stars: raw.timeAttackBest.stars, seconds: raw.timeAttackBest.seconds };
     }
+    // Save versioning (#48): a v1 save has no version field — its stars,
+    // unlocks and bests are kept above and the new fields start at their
+    // defaults. Whatever version was stored, the parsed save is the
+    // current schema, so the next write stamps SAVE_VERSION.
+    save.version = SAVE_VERSION;
+    save.stats = sanitizeStats(raw.stats);
+    save.achievements = sanitizeAchievements(raw.achievements);
     return save;
   } catch {
     return defaultSave();
