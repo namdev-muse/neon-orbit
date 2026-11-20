@@ -15,7 +15,7 @@ import {
   clampZoom, isTapGesture, focusStep,
 } from './physics.js';
 
-export const VERSION = '0.11.0';
+export const VERSION = '0.12.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -447,11 +447,108 @@ scene.add(boundary);
   scene.add(stars);
 }
 
+// Nebula background (#29): one ShaderMaterial — a slowly drifting
+// 2-octave value-noise nebula in violet / magenta / cyan on a plane behind
+// the starfield, so the sky has depth instead of flat black. The uTime
+// uniform advances every frame in the animate loop.
+const nebulaUniforms = { uTime: { value: 0 } };
+const nebulaMat = new THREE.ShaderMaterial({
+  uniforms: nebulaUniforms,
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform float uTime;
+    varying vec2 vUv;
+    // Cheap hash (no sin — a sin-based hash is far too slow for a
+    // fullscreen shader under software rendering, and it stalled the
+    // game clock enough to time out the render check's launch waits).
+    float hash(vec2 p) {
+      vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+      p3 += dot(p3, p3.yzx + 33.33);
+      return fract((p3.x + p3.y) * p3.z);
+    }
+    float noise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+                 mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+    }
+    // Two octaves keep the clouds soft without paying for a third.
+    float fbm(vec2 p) {
+      float v = 0.0;
+      float a = 0.5;
+      for (int i = 0; i < 2; i++) {
+        v += a * noise(p);
+        p = p * 2.03 + vec2(11.3, 7.7);
+        a *= 0.5;
+      }
+      return v;
+    }
+    void main() {
+      vec2 p = vUv * 3.0;
+      float t = uTime * 0.012;
+      float n = fbm(p + vec2(t, -t * 0.6));
+      float m = fbm(p * 1.7 - vec2(t * 0.7, t));
+      vec3 base = vec3(0.027, 0.012, 0.075);
+      vec3 violet = vec3(0.16, 0.07, 0.38);
+      vec3 magenta = vec3(0.45, 0.08, 0.42);
+      vec3 cyan = vec3(0.05, 0.25, 0.38);
+      vec3 col = base + violet * smoothstep(0.35, 0.75, n);
+      col += magenta * smoothstep(0.55, 0.85, m) * 0.7;
+      col += cyan * smoothstep(0.6, 0.9, n * m) * 0.5;
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+  depthWrite: false,
+});
+const nebula = new THREE.Mesh(new THREE.PlaneGeometry(240, 240), nebulaMat);
+nebula.position.z = -12;
+scene.add(nebula);
+
+// Planet atmosphere glow (#29): one fresnel ShaderMaterial per effect —
+// a backside sphere a little larger than the planet, additive, so each
+// planet wears a halo in its own colour. One material instance per planet
+// (same shader code, its own glowColor uniform).
+const planetGlowGeo = new THREE.SphereGeometry(1, 32, 24);
+const PLANET_GLOW_VERT = `
+  varying vec3 vNormal;
+  void main() {
+    vNormal = normalize(normalMatrix * normal);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+const PLANET_GLOW_FRAG = `
+  uniform vec3 glowColor;
+  varying vec3 vNormal;
+  void main() {
+    float intensity = pow(0.62 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 3.5);
+    gl_FragColor = vec4(glowColor, 1.0) * intensity;
+  }
+`;
+function makePlanetGlowMaterial(hexColor) {
+  return new THREE.ShaderMaterial({
+    uniforms: { glowColor: { value: new THREE.Color(hexColor) } },
+    vertexShader: PLANET_GLOW_VERT,
+    fragmentShader: PLANET_GLOW_FRAG,
+    side: THREE.BackSide,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+  });
+}
+
 // Level group: planets + targets for the current level.
 const levelGroup = new THREE.Group();
 scene.add(levelGroup);
 let planetMeshes = [];
 let planetRings = [];
+let planetGlows = []; // fresnel atmosphere halo per planet (#29)
 let targetMeshes = [];
 let targetRings = [];
 let shieldMeshes = []; // shield ring per target (null unless shielded)
@@ -510,7 +607,10 @@ const PREVIEW_END_COLORS = {
   none: 0x22d3ee,
 };
 
-// Comet trail (cyan line, recent positions).
+// Comet trail (cyan line, recent positions) + its glow ribbon (#28): a
+// triangle strip whose width tapers and whose colour fades to black along
+// the trail, so additive blending makes it glow bright at the head and
+// melt away at the tail. The thin cyan line stays as a bright core.
 const trailPositions = new Float32Array(TRAIL_MAX * 3);
 const trailGeo = new THREE.BufferGeometry();
 trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPositions, 3));
@@ -520,6 +620,26 @@ const trailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({
 trailLine.frustumCulled = false;
 trailLine.visible = false;
 scene.add(trailLine);
+// Ribbon buffers: two vertices per trail point, pre-built index for the
+// maximum strip length; updateTrailLine rewrites positions + colours.
+const ribbonPositions = new Float32Array(TRAIL_MAX * 2 * 3);
+const ribbonColors = new Float32Array(TRAIL_MAX * 2 * 3);
+const ribbonIndex = new Uint16Array((TRAIL_MAX - 1) * 6);
+for (let i = 0; i < TRAIL_MAX - 1; i++) {
+  const a = i * 2, b = i * 2 + 1, c = i * 2 + 2, d = i * 2 + 3;
+  ribbonIndex.set([a, b, c, b, d, c], i * 6);
+}
+const ribbonGeo = new THREE.BufferGeometry();
+ribbonGeo.setAttribute('position', new THREE.BufferAttribute(ribbonPositions, 3));
+ribbonGeo.setAttribute('color', new THREE.BufferAttribute(ribbonColors, 3));
+ribbonGeo.setIndex(new THREE.BufferAttribute(ribbonIndex, 1));
+const trailRibbon = new THREE.Mesh(ribbonGeo, new THREE.MeshBasicMaterial({
+  vertexColors: true, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+}));
+trailRibbon.frustumCulled = false;
+trailRibbon.visible = false;
+scene.add(trailRibbon);
 let trailHistory = [];
 
 // Pooled particles (one THREE.Points, reused slots, additive blending).
@@ -629,6 +749,80 @@ function updateShockwaves(dt) {
 function countAliveParticles() {
   let n = 0;
   for (let i = 0; i < PARTICLE_MAX; i++) if (pLife[i] > 0) n++;
+  return n;
+}
+
+// Level-complete confetti (#30): a pool of 3D shards (small coloured
+// planes) that burst from the collected targets when a level completes,
+// tumble under gravity and shrink away. Pooled and reused — no allocation
+// per win.
+const CONFETTI_MAX = 90;
+const CONFETTI_COLORS = [0xffd166, 0xff2d95, 0x22d3ee, 0xa855f7, 0xffffff];
+const confettiGeo = new THREE.PlaneGeometry(0.42, 0.26);
+const confettiMats = CONFETTI_COLORS.map((c) => new THREE.MeshBasicMaterial({
+  color: c, transparent: true, side: THREE.DoubleSide, depthWrite: false,
+}));
+const confettiMeshes = [];
+const confettiVel = new Float32Array(CONFETTI_MAX * 3);
+const confettiSpin = new Float32Array(CONFETTI_MAX * 3);
+const confettiLife = new Float32Array(CONFETTI_MAX);
+const confettiMaxLife = new Float32Array(CONFETTI_MAX);
+for (let i = 0; i < CONFETTI_MAX; i++) {
+  const mesh = new THREE.Mesh(confettiGeo, confettiMats[i % confettiMats.length]);
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  confettiMeshes.push(mesh);
+}
+let confettiCursor = 0;
+
+function spawnConfetti(x, y, count) {
+  for (let n = 0; n < count; n++) {
+    const i = confettiCursor;
+    confettiCursor = (confettiCursor + 1) % CONFETTI_MAX;
+    const mesh = confettiMeshes[i];
+    mesh.position.set(x + (Math.random() - 0.5) * 1.5, y + (Math.random() - 0.5) * 1.5, 0.5);
+    mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    mesh.scale.setScalar(1);
+    mesh.visible = true;
+    const a = Math.random() * Math.PI * 2;
+    const sp = 3 + Math.random() * 7;
+    confettiVel[i * 3] = Math.cos(a) * sp;
+    confettiVel[i * 3 + 1] = Math.abs(Math.sin(a)) * sp * 0.8 + 2;
+    confettiVel[i * 3 + 2] = (Math.random() - 0.5) * 2;
+    confettiSpin[i * 3] = (Math.random() - 0.5) * 12;
+    confettiSpin[i * 3 + 1] = (Math.random() - 0.5) * 12;
+    confettiSpin[i * 3 + 2] = (Math.random() - 0.5) * 12;
+    confettiLife[i] = 1.4 + Math.random() * 0.8;
+    confettiMaxLife[i] = confettiLife[i];
+  }
+}
+
+function updateConfetti(dt) {
+  for (let i = 0; i < CONFETTI_MAX; i++) {
+    if (confettiLife[i] <= 0) continue;
+    confettiLife[i] -= dt;
+    const mesh = confettiMeshes[i];
+    if (confettiLife[i] <= 0) {
+      mesh.visible = false;
+      continue;
+    }
+    confettiVel[i * 3 + 1] -= 9 * dt; // gravity pulls the shards down
+    mesh.position.x += confettiVel[i * 3] * dt;
+    mesh.position.y += confettiVel[i * 3 + 1] * dt;
+    mesh.position.z += confettiVel[i * 3 + 2] * dt;
+    mesh.rotation.x += confettiSpin[i * 3] * dt;
+    mesh.rotation.y += confettiSpin[i * 3 + 1] * dt;
+    mesh.rotation.z += confettiSpin[i * 3 + 2] * dt;
+    // Shrink away in the last third of life so shards never pop out.
+    const f = confettiLife[i] / confettiMaxLife[i];
+    mesh.scale.setScalar(f < 0.35 ? Math.max(0.01, f / 0.35) : 1);
+  }
+}
+
+function countActiveConfetti() {
+  let n = 0;
+  for (let i = 0; i < CONFETTI_MAX; i++) if (confettiLife[i] > 0) n++;
   return n;
 }
 
@@ -901,6 +1095,7 @@ function buildLevelMeshes(level) {
   while (levelGroup.children.length) levelGroup.remove(levelGroup.children[0]);
   planetMeshes = [];
   planetRings = [];
+  planetGlows = [];
   targetMeshes = [];
   targetRings = [];
   shieldMeshes = [];
@@ -924,6 +1119,13 @@ function buildLevelMeshes(level) {
     ring.rotation.y = 0.3;
     levelGroup.add(ring);
     planetRings.push(ring);
+    // Atmosphere glow (#29): a fresnel halo in the planet's own colour,
+    // a little larger than the planet so the rim reads against the dark.
+    const glow = new THREE.Mesh(planetGlowGeo, makePlanetGlowMaterial(p.color));
+    glow.position.set(p.x, p.y, 0);
+    glow.scale.setScalar(p.r * 1.45);
+    levelGroup.add(glow);
+    planetGlows.push(glow);
     // Moving planets show their orbit path so the player can time a launch.
     if (p.orbit) {
       const o = p.orbit;
@@ -1120,7 +1322,12 @@ function updatePreview() {
   previewEndRing.visible = true;
 }
 
+const RIBBON_HEAD = new THREE.Color(0x22d3ee);
+const RIBBON_TAIL = new THREE.Color(0x000000);
+const ribbonColor = new THREE.Color();
+
 function updateTrailLine() {
+  // Thin bright core line.
   for (let i = 0; i < trailHistory.length; i++) {
     trailPositions[i * 3] = trailHistory[i][0];
     trailPositions[i * 3 + 1] = trailHistory[i][1];
@@ -1129,6 +1336,43 @@ function updateTrailLine() {
   trailGeo.setDrawRange(0, trailHistory.length);
   trailGeo.attributes.position.needsUpdate = true;
   trailLine.visible = trailHistory.length > 1;
+  // Fading ribbon (#28): two vertices per point, offset perpendicular to
+  // the local direction, width tapering head -> tail, colour fading cyan
+  // -> black (additive blending turns black into transparent).
+  const n = trailHistory.length;
+  if (n <= 1) {
+    trailRibbon.visible = false;
+    return;
+  }
+  for (let i = 0; i < n; i++) {
+    const p = trailHistory[i];
+    const q = trailHistory[Math.min(i + 1, n - 1)];
+    const r = trailHistory[Math.max(i - 1, 0)];
+    let dx = q[0] - r[0], dy = q[1] - r[1];
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len; dy /= len;
+    // f = 0 at the head (newest point), 1 at the tail (oldest point):
+    // trailHistory is oldest-first, so the newest point is last.
+    const f = 1 - i / (n - 1);
+    const half = 0.55 * (1 - f) + 0.06 * f;
+    const nx = -dy * half, ny = dx * half;
+    ribbonPositions[(i * 2) * 3] = p[0] + nx;
+    ribbonPositions[(i * 2) * 3 + 1] = p[1] + ny;
+    ribbonPositions[(i * 2) * 3 + 2] = 0;
+    ribbonPositions[(i * 2 + 1) * 3] = p[0] - nx;
+    ribbonPositions[(i * 2 + 1) * 3 + 1] = p[1] - ny;
+    ribbonPositions[(i * 2 + 1) * 3 + 2] = 0;
+    ribbonColor.lerpColors(RIBBON_HEAD, RIBBON_TAIL, f);
+    for (let v = 0; v < 2; v++) {
+      ribbonColors[(i * 2 + v) * 3] = ribbonColor.r;
+      ribbonColors[(i * 2 + v) * 3 + 1] = ribbonColor.g;
+      ribbonColors[(i * 2 + v) * 3 + 2] = ribbonColor.b;
+    }
+  }
+  ribbonGeo.setDrawRange(0, (n - 1) * 6);
+  ribbonGeo.attributes.position.needsUpdate = true;
+  ribbonGeo.attributes.color.needsUpdate = true;
+  trailRibbon.visible = true;
 }
 
 let flight = null;
@@ -1430,6 +1674,8 @@ function completeLevel() {
     const pos = targetPosAt(t, levelTime);
     spawnBurst(pos.x, pos.y, 0, 0xffd166, 30, 8, 1.0);
     spawnShockwave(pos.x, pos.y, 0xffd166, 7, 0.9);
+    // Confetti burst (#30): 3D shards burst from every collected target.
+    spawnConfetti(pos.x, pos.y, 25);
   }
   $('complete-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
   let shotsLine = `Finished in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'} (par ${level.par})`;
@@ -2008,6 +2254,9 @@ function updatePlanetMeshes() {
     if (m) m.position.set(pos.x, pos.y, 0);
     const r = planetRings[i];
     if (r) r.position.set(pos.x, pos.y, 0);
+    // The atmosphere halo rides with its planet (#29).
+    const g = planetGlows[i];
+    if (g) g.position.set(pos.x, pos.y, 0);
   });
 }
 
@@ -2040,6 +2289,8 @@ function animate(now) {
   trauma = Math.max(0, trauma - dt * 1.4);
   const shake = trauma * trauma * settings.shake;
   const t = now / 1000;
+  // The nebula shader drifts with real time (#29).
+  nebulaUniforms.uTime.value = t;
   cameraRig.position.set(
     shake * 0.9 * Math.sin(t * 47.3),
     shake * 0.9 * Math.sin(t * 39.7 + 1.3),
@@ -2054,6 +2305,7 @@ function animate(now) {
   if (!stopped) {
     updateParticles(dt);
     updateShockwaves(dt);
+    updateConfetti(dt);
     const level = levelById(state.levelId);
     if (level) {
       // The level clock runs while aiming; during flight it advances in
@@ -2211,6 +2463,16 @@ window.__orbit = {
     portalCount,
     bounceCount,
     shieldHitCount,
+  }),
+  // Visual polish state (Block 12, #28/#29/#30) for the render check:
+  // the trail ribbon's live length, the nebula clock, how many planet
+  // glow halos are in the scene, and how many confetti shards are flying.
+  visualState: () => ({
+    trailPoints: trailHistory.length,
+    trailRibbonVisible: trailRibbon.visible,
+    nebulaTime: nebulaUniforms.uTime.value,
+    planetGlows: planetGlows.length,
+    confettiActive: countActiveConfetti(),
   }),
   // State audit (Block 11, #47): how many 1s checks ran, how many
   // failures were found, how many recoveries ran, and the last reason.
