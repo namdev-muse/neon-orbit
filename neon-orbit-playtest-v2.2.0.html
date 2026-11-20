@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Neon Orbit — 3D Gravity Slingshot Puzzle</title>
 <meta name="description" content="Neon Orbit: a 3D gravity-slingshot puzzle. Drag, aim, and launch your comet around planets to collect every star target.">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
 /* Neon Orbit — neon styling. Palette: deep-space indigo background,
    cyan comet/trails, magenta targets, gold stars, violet planets. */
@@ -713,7 +714,6 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   #aim-readout { bottom: 8px; }
   .power-control { bottom: 8px; }
 }
-
 </style>
 <script type="importmap">
 {
@@ -818,7 +818,7 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
         <div class="campaign-progress-bar"><div id="campaign-progress-fill"></div></div>
       </div>
       <div id="level-select" class="level-select" aria-label="Level select"></div>
-      <p class="total-stars">Total stars: <span id="total-stars">0</span> / 18</p>
+      <p class="total-stars">Total stars: <span id="total-stars">0</span> / 36</p>
     </div>
   </div>
 </div>
@@ -835,7 +835,7 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
       <li>Collect <strong>every magenta target</strong> before you run out of shots. Chain two stars on one flight with a good burn — par rewards flying, not just aiming.</li>
       <li>Crashing into a planet or flying out of bounds <strong>loses the shot</strong>. <strong>Black holes</strong> pull hard and <strong>swallow</strong> comets — arc around them, never through them.</li>
       <li><strong>Moving planets</strong> orbit their centre (the faint ring shows the path). Time your launch for when the bend lines up, then burn to chase the stars as the bend moves.</li>
-      <li><strong>Portals</strong> come in matching pairs — fly into one and you exit its twin at the same speed. <strong>Shielded targets</strong> (white ring) take two hits: the first cracks the shield, the second collects the star.</li>
+      <li><strong>Portals</strong> come in matching pairs — same colour ring, joined by a faint line in that colour. Fly into one and you exit its twin at the same speed. <strong>Shielded targets</strong> (white ring) take two hits: the first cracks the shield — the ring turns amber — the second collects the star.</li>
       <li>Press <strong>Space</strong> mid-flight (or the <strong>Skip</strong> button) to <strong>fast-forward</strong> a long drift.</li>
       <li>Beat par for <strong>3 stars</strong>. Finish a level to unlock the next one.</li>
       <li><strong>Ship upgrades</strong> unlock with campaign stars — <strong>Ion Thrusters</strong> (+25% thrust power) at 15 stars, <strong>Big Tank</strong> (+30% fuel) at 30 stars. Toggle them in Level Select; equipped upgrades show in the HUD.</li>
@@ -1292,7 +1292,7 @@ const LEVELS = [
   },
   {
     id: 7, name: 'Ember Drift', par: 2,
-    hint: 'One star drifts in the lower dark. Meet it where it is, then swing across for the rest.',
+    hint: 'Start low and slow — the drifting star is closest. Burn early while you are slow; the fast line past the orange planet eats shots.',
     theme: { disc: '#1a0a02', tint: '#ffcf9e' },
     pad: { x: -15, y: 0 },
     planets: [
@@ -1325,7 +1325,7 @@ const LEVELS = [
   },
   {
     id: 8, name: 'Triple Voids', par: 2,
-    hint: 'Three black holes guard the field. Thread between them — never through them — and burn to catch all three stars.',
+    hint: 'Three black holes guard the field. Take the close star first, then thread between the holes — never through them — and burn to catch the shielded pair.',
     theme: { disc: '#050514', tint: '#d9b8ff' },
     pad: { x: -15, y: -2 },
     planets: [
@@ -1359,7 +1359,7 @@ const LEVELS = [
   },
   {
     id: 9, name: 'Portal Run', par: 3,
-    hint: 'Two portal pairs, one wall of a planet. Hop the gates — exit where the stars are — and chain the whole run.',
+    hint: 'Two portal pairs, one wall of a planet. Same-colour rings are twins — hop a gate to exit where the stars are. Take the close stars first, then chain the run.',
     theme: { disc: '#011a12', tint: '#9ff5e6' },
     pad: { x: -15, y: 0 },
     planets: [
@@ -1367,6 +1367,10 @@ const LEVELS = [
       { x: 8, y: 6, r: 1.8, mu: 130, color: 0x14b8a6 },
     ],
     portals: [
+      // Portal radius stays 1.6: bumping it to 1.9 let the ballistic
+      // solver clear the level in par through a portal hop, breaking
+      // the anti-slop gate — the pairing fix is the twin link line
+      // and the hint, not a bigger ring.
       { x: -8, y: -9, r: 1.6, pair: 0 },
       // Exits sit away from the target clusters: a portal hop is a
       // reposition, not a free double-collect — the exits point at
@@ -1979,25 +1983,39 @@ function zenLevel() {
   };
 }
 
+// Total hits a level needs: every target counts once, a shielded target
+// twice (crack, then collect). L6–L12 need more hits than par+2 shots,
+// so a budget of par+2 made them mathematically impossible to finish
+// one hit per shot — every late level demanded a multi-hit chain just to
+// complete. Par stays the 3-star skill bar; the budget is the completion
+// allowance, so a player who flies one target per shot can still finish
+// (1 star), while 3 stars still needs the chained flying the bot does.
+function totalHits(level) {
+  if (!level || !Array.isArray(level.targets)) return 0;
+  return level.targets.reduce((n, t) => n + targetHits(t), 0);
+}
+
 function shotBudget(level) {
   // Zen never runs out of shots: the budget is infinite, so endShot can
   // never fail the level and the HUD shows ∞ instead of a count.
   if (level.zen) return Infinity;
-  return level.par + 2;
+  return Math.max(level.par + 2, totalHits(level) + 1);
 }
 
 // Stars: par or fewer = 3, par+1 = 2, within budget = 1, otherwise 0.
-function starsForShots(shotsUsed, par) {
+// The budget is the completion allowance (see shotBudget): on late levels
+// it is wider than par+2, so a finish inside it still earns its 1 star.
+function starsForShots(shotsUsed, par, budget = par + 2) {
   if (shotsUsed <= par) return 3;
   if (shotsUsed === par + 1) return 2;
-  if (shotsUsed <= par + 2) return 1;
+  if (shotsUsed <= budget) return 1;
   return 0;
 }
 
-// Star thresholds for a level's par, for level cards and the HUD:
-// 3 stars at par or fewer, 2 stars at par+1, 1 star at par+2 (the budget).
-function starThresholds(par) {
-  return { three: par, two: par + 1, one: par + 2 };
+// Star thresholds for a level's par and budget, for level cards and the
+// HUD: 3 stars at par or fewer, 2 stars at par+1, 1 star at the budget.
+function starThresholds(par, budget = par + 2) {
+  return { three: par, two: par + 1, one: budget };
 }
 
 function isLevelComplete(level, collected) {
@@ -2068,6 +2086,64 @@ function levelBouncePads(level) {
 // target (the first hit only cracks the shield).
 function targetHits(target) {
   return Number.isInteger(target.hits) && target.hits >= 1 ? target.hits : 1;
+}
+
+// ---------------------------------------------------------------- default aim
+// The aim a level opens with (and resets to after each shot): the NEAREST
+// uncollected target, never a crash line. The old default aimed at the
+// first target in the list — on Ember Drift that line runs straight
+// through the orange planet, so a player who pressed Launch without
+// dragging crashed on shot one. The bot's winning lines are the same
+// family: low, slow shots at the close stars, thrusting early while the
+// comet is slow. If the direct line is blocked by a planet or a black
+// hole, the angle rotates to the nearest clear line (5° steps, ±60°);
+// if no line clears, the direct angle stands — the player still aims.
+// Clearance is checked on the straight segment from the pad toward the
+// target (gravity bends the real flight, but the opening of a straight
+// crash line is what the default must never be).
+const AIM_CLEAR_MARGIN = 1.0; // extra clearance beyond a body's radius
+const AIM_CLEAR_HOLE_EXTRA = 0.4; // black holes pull: give them more room
+function aimLineClear(level, px, py, angle, length) {
+  const dx = Math.cos(angle), dy = Math.sin(angle);
+  const clearOf = (cx, cy, radius) => {
+    // Distance from (cx, cy) to the segment (px,py)-(ex,ey): project
+    // onto the unit direction, clamped to the segment's length.
+    const proj = (cx - px) * dx + (cy - py) * dy;
+    const tt = Math.max(0, Math.min(length, proj));
+    const qx = px + dx * tt, qy = py + dy * tt;
+    const ddx = cx - qx, ddy = cy - qy;
+    return ddx * ddx + ddy * ddy > radius * radius;
+  };
+  for (const p of level.planets || []) {
+    if (!clearOf(p.x, p.y, p.r + COMET_RADIUS + AIM_CLEAR_MARGIN)) return false;
+  }
+  for (const h of levelBlackHoles(level)) {
+    if (!clearOf(h.x, h.y, h.r + COMET_RADIUS + AIM_CLEAR_MARGIN + AIM_CLEAR_HOLE_EXTRA)) return false;
+  }
+  return true;
+}
+function defaultAimAngle(level, collected = []) {
+  const done = new Set(Array.isArray(collected) ? collected : []);
+  let best = -1, bestDist = Infinity;
+  level.targets.forEach((t, i) => {
+    if (done.has(i)) return;
+    const dx = t.x - level.pad.x, dy = t.y - level.pad.y;
+    const d = dx * dx + dy * dy;
+    if (d < bestDist) { bestDist = d; best = i; }
+  });
+  if (best === -1) best = 0;
+  const t = level.targets[best];
+  const base = Math.atan2(t.y - level.pad.y, t.x - level.pad.x);
+  const length = Math.min(Math.sqrt(bestDist) + 2, PLAYFIELD_RADIUS);
+  if (aimLineClear(level, level.pad.x, level.pad.y, base, length)) return base;
+  const step = (5 * Math.PI) / 180;
+  for (let k = 1; k <= 12; k++) {
+    for (const sign of [1, -1]) {
+      const a = base + sign * k * step;
+      if (aimLineClear(level, level.pad.x, level.pad.y, a, length)) return a;
+    }
+  }
+  return base;
 }
 
 function launchState(level, angle, power, t0 = 0, shieldHits = {}, orbsCollected = [], loadout) {
@@ -2775,7 +2851,7 @@ function createPerfGuard() {
 }
 
 /* ===== game.js (inlined) ===== */
-// Neon Orbit v2 — Three.js 3D gravity-slingshot puzzle (v2.1.0).
+// Neon Orbit v2 — Three.js 3D gravity-slingshot puzzle (v2.2.0).
 // Drag to aim, release to launch — then STEER the comet mid-flight with
 // limited fuel thrust. Planets bend the flight with gravity; collect
 // every magenta target before shots run out. The prediction oracle is
@@ -3335,11 +3411,17 @@ const bouncePadRingGeo = new THREE.RingGeometry(0.92, 1, 48);
 const bouncePadRingMat = new THREE.MeshBasicMaterial({
   color: 0xbbf7d0, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
 });
-// Shield rings: a white ring around a shielded target; it vanishes when
-// the shield cracks, so the remaining hit reads at a glance.
+// Shield rings: a white ring around a shielded target. When the shield
+// cracks the ring turns dim amber instead of vanishing — a cracked shield
+// used to look identical to a plain target, so a player who cracked one
+// on an earlier shot could not tell it needed one more hit. The ring only
+// disappears when the star itself is collected.
 const shieldRingGeo = new THREE.TorusGeometry(1, 0.07, 8, 48);
 const shieldRingMat = new THREE.MeshBasicMaterial({
   color: 0xe2e8f0, transparent: true, opacity: 0.85,
+});
+const shieldCrackedMat = new THREE.MeshBasicMaterial({
+  color: 0xf59e0b, transparent: true, opacity: 0.5,
 });
 // Trail pickup orbs (#12): small gold octahedrons (half the target size)
 // that spin and pulse; they vanish when flown through.
@@ -3485,6 +3567,7 @@ let targetRings = [];
 let shieldMeshes = []; // shield ring per target (null unless shielded)
 let blackHoleMeshes = []; // { disc, ring } per black hole (disc spins)
 let portalMeshes = []; // { group, disc, ring } per portal (disc swirls)
+let portalLinkMeshes = []; // faint line between twin portals, same pair colour
 let bouncePadMeshes = []; // { disc, ring } per bounce pad
 let boostPadMeshes = []; // { disc, ring } per boost pad (Block 2, #3)
 let orbMeshes = []; // gold octahedron per trail orb (null when collected)
@@ -4008,7 +4091,12 @@ function challengeBest(mode) {
 // aiming — so the HUD bar reads 130 on a Big Tank ship, not 100.
 function currentFuelMax() {
   if (flight && typeof flight.fuelMax === 'number' && Number.isFinite(flight.fuelMax)) return flight.fuelMax;
-  return FUEL_MAX * activeLoadout(save).tank;
+  // activeLoadout().tank is a boolean (equipped or not), not a number —
+  // the multiplier comes from loadoutMultipliers. (Playtest fix: the old
+  // code multiplied FUEL_MAX by the boolean, giving 0 with no Big Tank,
+  // so the bar's percentage was NaN in the aim phase and a restart kept
+  // showing the last flight's leftover fuel.)
+  return FUEL_MAX * loadoutMultipliers(activeLoadout(save)).tank;
 }
 function updateHUD() {
   const level = levelById(state.levelId);
@@ -4045,13 +4133,16 @@ function updateHUD() {
   bonusEl.textContent = `Bonus +${state.assistBonus}`;
   // Fuel tank (v2): a real bar, not a chip — the per-shot tank drains as
   // the comet burns and refills at gold orbs. Hidden outside aim/fly so
-  // menus stay clean. The width is refreshed every frame in animate, so
-  // this only handles visibility here.
+  // menus stay clean. The width is refreshed every frame in flight, and
+  // here on every HUD refresh — so a restart (which clears the flight)
+  // shows a full tank in the aim phase instead of the last flight's
+  // leftover fuel.
   const fuelEl = $('hud-fuel');
   if (fuelEl) {
     const inPlay = state.phase === 'aim' || state.phase === 'fly';
     fuelEl.classList.toggle('hidden', !inPlay);
   }
+  updateFuelBar();
   // Ship upgrades (Block 2, #1-2): equipped upgrades show as chips in
   // the HUD so the player can see what ship they are flying.
   const upEl = $('hud-upgrades');
@@ -4072,8 +4163,8 @@ function updateHUD() {
 }
 
 // Fuel bar fill (v2): width = fuel remaining on the live flight (or a
-// full tank while aiming). Called every frame while flying; writes the
-// DOM only when the percentage actually moves.
+// full tank while aiming). Called every frame while flying and on every
+// HUD refresh; writes the DOM only when the percentage actually moves.
 let lastFuelPct = -1;
 function updateFuelBar() {
   const fill = $('fuel-fill');
@@ -4165,7 +4256,7 @@ function renderLevelSelect() {
     if (locked) {
       parLine.textContent = 'Finish the previous level';
     } else {
-      const t = starThresholds(level.par);
+      const t = starThresholds(level.par, shotBudget(level));
       parLine.textContent = `Par ${level.par} · ★★★≤${t.three} ★★≤${t.two} ★≤${t.one}`;
     }
     btn.append(name, starLine, parLine);
@@ -4350,6 +4441,7 @@ function buildLevelMeshes(level) {
   shieldMeshes = [];
   blackHoleMeshes = [];
   portalMeshes = [];
+  portalLinkMeshes = [];
   bouncePadMeshes = [];
   boostPadMeshes = [];
   orbMeshes = [];
@@ -4429,6 +4521,31 @@ function buildLevelMeshes(level) {
     group.add(disc);
     levelGroup.add(group);
     portalMeshes.push({ group, disc, ring, base: portal.r });
+  }
+  // Twin links (M2 playtest fix): a faint line in the pair colour joins
+  // twin portals, so the pairing reads at a glance instead of being
+  // colour-matching guesswork — the line says "these two go together"
+  // before the player ever flies one.
+  {
+    const seen = new Set();
+    for (const portal of levelPortals(level)) {
+      const pair = portal.pair ?? 0;
+      if (seen.has(pair)) continue;
+      seen.add(pair);
+      const twins = levelPortals(level).filter((p) => (p.pair ?? 0) === pair);
+      if (twins.length !== 2) continue;
+      const geo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(twins[0].x, twins[0].y, -0.4),
+        new THREE.Vector3(twins[1].x, twins[1].y, -0.4),
+      ]);
+      const mat = new THREE.LineBasicMaterial({
+        color: PORTAL_COLORS[pair % PORTAL_COLORS.length],
+        transparent: true, opacity: 0.3,
+      });
+      const line = new THREE.Line(geo, mat);
+      levelGroup.add(line);
+      portalLinkMeshes.push(line);
+    }
   }
   // Bounce pads: a lime disc on the playfield with a bright rim.
   for (const pad of levelBouncePads(level)) {
@@ -4513,12 +4630,6 @@ function buildLevelMeshes(level) {
   for (const idx of state.orbsCollected) {
     if (orbMeshes[idx]) orbMeshes[idx].visible = false;
   }
-}
-
-function defaultAimAngle(level, collected) {
-  const next = level.targets.findIndex((_, i) => !collected.includes(i));
-  const t = level.targets[next === -1 ? 0 : next];
-  return Math.atan2(t.y - level.pad.y, t.x - level.pad.x);
 }
 
 function resetCometToPad() {
@@ -4989,7 +5100,7 @@ function endShot() {
 
 function completeLevel() {
   const level = levelById(state.levelId);
-  const stars = starsForShots(state.shotsUsed, level.par);
+  const stars = starsForShots(state.shotsUsed, level.par, shotBudget(level));
   state.stars = stars;
   // Campaign completions unlock the next level; challenge completions
   // record a best (daily / per-seed) instead and never touch the unlocks.
@@ -5339,11 +5450,13 @@ function stepFlightLoop(dt) {
       if (gained > 0) announce(`Fuel orb collected — +${gained} bonus, +${FUEL_ORB_REFILL} fuel.`);
     } else if (ev && ev.type === 'shieldhit') {
       // The crack persists in the attempt's shield state, and the shield
-      // ring on that target vanishes so one hit left reads at a glance.
+      // ring on that target turns dim amber (it stays visible) so one
+      // hit left still reads at a glance — a cracked shield must never
+      // look like a plain target.
       for (const idx of ev.targets) {
         state.shieldHits[idx] = flight.shieldHits[idx];
         const mesh = shieldMeshes[idx];
-        if (mesh) mesh.visible = false;
+        if (mesh) mesh.material = shieldCrackedMat;
         const t = level.targets[idx];
         const pos = targetPosAt(t, levelTime);
         feedback('shieldhit', pos.x, pos.y);
@@ -5355,19 +5468,22 @@ function stepFlightLoop(dt) {
         if (mesh) mesh.visible = false;
         const ring = targetRings[idx];
         if (ring) ring.visible = false;
+        const shield = shieldMeshes[idx];
+        if (shield) shield.visible = false;
         const t = level.targets[idx];
         const pos = targetPosAt(t, levelTime);
         feedback('collect', pos.x, pos.y);
       }
       // A shield crack in the same substep as a collect is applied
       // silently by the physics; sync the attempt state and rings so a
-      // cracked shield never shows as intact.
+      // cracked shield shows the amber cracked ring, never the white
+      // intact one — and never vanishes.
       for (const [k, v] of Object.entries(flight.shieldHits)) {
         const idx = Number(k);
         if (state.shieldHits[idx] !== v) {
           state.shieldHits[idx] = v;
           const mesh = shieldMeshes[idx];
-          if (mesh) mesh.visible = false;
+          if (mesh) mesh.material = shieldCrackedMat;
         }
       }
       state.targetsRemaining = level.targets.length - state.collected.length;
