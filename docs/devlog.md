@@ -485,3 +485,34 @@ Theme: visual polish — nebula background, planet glow, trails.
   on a real GPU the game runs at 60fps and these waits resolve in
   seconds. The FPS guard (#46, Block 14) is the proper home for
   slow-device handling.
+
+## Block 13 — 2026-11-20 07:30 Asia/Bangkok (v0.13.0)
+
+Theme: README + screenshots + repo polish.
+
+- **README gameplay screenshots (#55):** three real captures from a
+  headless-Chromium run of the live game, now in `docs/screenshots/` and
+  embedded in the README's new Gameplay section — `menu.png` (main menu,
+  v0.13.0, all modes + campaign progress), `gameplay.png` (Level 1
+  mid-flight, comet trail ribbon glowing past the planet toward the
+  magenta target), `complete.png` (Level Complete, 3 stars in 1 shot,
+  confetti burst). A new `tests/screenshots.js` regenerates them
+  (`npm run screenshots`): it serves the game locally, reuses the
+  render check's curl-cached Three.js fulfilment, launches Level 1
+  through the solver hook, waits for the trail ribbon (`trailPoints
+  >= 5`) and the confetti (`confettiActive >= 5`), and fails on any
+  console/page error. The three PNGs were eyeballed after capture —
+  real frames, not blank screens.
+- **Devlog kept updated (#56):** this entry; the devlog now covers
+  Blocks 1-13 with the per-block features, test counts and bugs found.
+- **Issue templates + contributing guide (#57):** `.github/ISSUE_TEMPLATE/`
+  gains a bug report (version, browser/OS, steps, level/mode) and a
+  feature request (idea, why it fits the core mechanic, how it could
+  work), plus `config.yml` disabling blank issues and linking the live
+  game and the guide. New `CONTRIBUTING.md` documents the stack, the
+  local setup, the three test commands, the code layout (`physics.js`
+  is pure logic, `game.js` owns the scene, `window.__orbit` is the
+  public test hook), and the ground rules (one deep mechanic, trauma
+  tiers, pooled particles, no credentials, no auto-posting).
+- Tests: smoke 370 checks PASS, bot 15/15 levels 3 stars. Render check
+  re-run for the version bump (menu v0.13.0, full campaign sweep).
