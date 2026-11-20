@@ -78,6 +78,14 @@ Real captures from a headless-Chromium run of the live game
   clock hits zero, a level runs out of shots, or all five are cleared.
   Your best full clear (most stars, then fastest) is saved, and the
   music turns tense under 30 seconds.
+- **Zen Sandbox** is a free orbit playground — unlimited shots, no fail
+  state. One static planet, one moving planet, a black hole and three
+  stars; every collected star drifts back onto the field after a short
+  delay, so you can keep flowing. Your best session (most stars in one
+  visit) is saved and shown in My Stats.
+- Skim close past a planet for a **slingshot** — time briefly slows to
+  0.35× for 450ms so you can watch the bend (skipped under reduce
+  motion, and the Time Attack clock never slows with it).
 - Every generated level is verified solvable by the same auto-aim solver
   the bot harness uses before it is offered — a challenge mode never has
   an impossible level. Par comes from the solver's shot count.

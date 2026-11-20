@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.14.0';
+export const VERSION = '0.15.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -32,6 +32,20 @@ export const FEEDBACK = {
   swallowed: { tier: 'medium', trauma: 0.50, hitStop: 0.06 },
   crash: { tier: 'large', trauma: 0.85, hitStop: 0.12 },
 };
+
+// Near-miss slow-mo (Block 15, #31): a close slingshot dips the time
+// scale to SLOW_MO_SCALE for SLOW_MO_MS of real time, so the player can
+// watch the bend. Pure helper so Node tests can drive it: 1 outside the
+// window, 0.35 inside it, and always 1 under reduce motion or on a
+// corrupted clock (a bad timestamp must never freeze the game).
+export const SLOW_MO_SCALE = 0.35;
+export const SLOW_MO_MS = 450;
+export function slowMoScale(nowMs, untilMs, reduceMotion) {
+  if (reduceMotion) return 1;
+  if (typeof nowMs !== 'number' || typeof untilMs !== 'number'
+    || !Number.isFinite(nowMs) || !Number.isFinite(untilMs)) return 1;
+  return nowMs < untilMs ? SLOW_MO_SCALE : 1;
+}
 
 // Near-miss (slingshot) band: a comet passing within NEAR_MISS_BAND of a
 // planet's surface — close enough to feel the bend, far enough to live —
@@ -442,7 +456,40 @@ export function generateLevel(seed, difficulty, id) {
   };
 }
 
+// ---------------------------------------------------------------- zen sandbox
+// Zen Sandbox (Block 15, #21): a free orbit playground — unlimited shots,
+// no fail state, collected targets drift back onto the field after a
+// short delay (the respawn lives in game.js). One static planet, one
+// moving planet, one black hole and three targets, hand-placed so the
+// bot solver clears it and every clearance rule in smoke.js holds:
+// the moving planet's orbit (radius 7) stays 4.6+ clear of every target
+// and 4.7 clear of the black hole's centre. `par` is nominal (3) — only
+// the bot's star math reads it; the mode never completes a level.
+export const ZEN_ID = 903;
+export function zenLevel() {
+  return {
+    id: ZEN_ID,
+    name: 'Zen Sandbox',
+    zen: true,
+    par: 3,
+    hint: 'Free orbit playground — unlimited shots. Collect stars, they drift back. No fail state, just flow.',
+    pad: { x: -14, y: 0 },
+    planets: [
+      { x: -2, y: 6, r: 2, mu: 140, color: 0x7c3aed },
+      {
+        x: 0, y: 7, r: 2.5, mu: 180, color: 0x8b5cf6,
+        orbit: { cx: 0, cy: 0, radius: 7, speed: 0.3, phase: Math.PI / 2 },
+      },
+    ],
+    blackHoles: [{ x: 11, y: 4, r: 1.4, mu: 240 }],
+    targets: [{ x: 13, y: 0, r: 1.6 }, { x: 10, y: 9, r: 1.6 }, { x: 13, y: -8, r: 1.6 }],
+  };
+}
+
 export function shotBudget(level) {
+  // Zen never runs out of shots: the budget is infinite, so endShot can
+  // never fail the level and the HUD shows ∞ instead of a count.
+  if (level.zen) return Infinity;
   return level.par + 2;
 }
 
@@ -782,7 +829,7 @@ export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0, 
 
 // ---------------------------------------------------------------- save data
 export function defaultSave() {
-  return { stars: {}, unlocked: 1, seenHowTo: false, daily: null, seedBest: {}, endlessBest: 0, timeAttackBest: null };
+  return { stars: {}, unlocked: 1, seenHowTo: false, daily: null, seedBest: {}, endlessBest: 0, timeAttackBest: null, zenBest: 0 };
 }
 
 // stars: { levelId: 0..3 }, unlocked: highest unlocked level id.
@@ -791,6 +838,7 @@ export function defaultSave() {
 // endlessBest: most endless rounds cleared in one run (0..99).
 // timeAttackBest: { stars: 0..15, seconds: 0..240 } — best full clear of
 // Time Attack (most stars, then fastest); null until the first full clear.
+// zenBest: most stars collected in one Zen Sandbox session (0..999).
 export function serializeSave(save) {
   const daily = save.daily && typeof save.daily.date === 'string'
     && /^\d{4}-\d{2}-\d{2}$/.test(save.daily.date)
@@ -819,6 +867,8 @@ export function serializeSave(save) {
     endlessBest: Number.isInteger(save.endlessBest)
       ? Math.max(0, Math.min(99, save.endlessBest)) : 0,
     timeAttackBest,
+    zenBest: Number.isInteger(save.zenBest)
+      ? Math.max(0, Math.min(999, save.zenBest)) : 0,
   });
 }
 
@@ -853,6 +903,9 @@ export function parseSave(json) {
     }
     if (Number.isInteger(raw.endlessBest)) {
       save.endlessBest = Math.max(0, Math.min(99, raw.endlessBest));
+    }
+    if (Number.isInteger(raw.zenBest)) {
+      save.zenBest = Math.max(0, Math.min(999, raw.zenBest));
     }
     if (raw.timeAttackBest && typeof raw.timeAttackBest === 'object'
       && Number.isInteger(raw.timeAttackBest.stars)

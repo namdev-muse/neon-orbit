@@ -1,4 +1,4 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.14.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.15.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
@@ -13,9 +13,10 @@ import {
   generateLevel, registerGeneratedLevel, solveShot,
   TIME_ATTACK_LEVEL_IDS, TIME_ATTACK_SECONDS, formatClock,
   clampZoom, isTapGesture, focusStep, createPerfGuard, PERF_LEVELS,
+  slowMoScale, SLOW_MO_MS, zenLevel, ZEN_ID,
 } from './physics.js';
 
-export const VERSION = '0.14.0';
+export const VERSION = '0.15.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -39,13 +40,17 @@ const ENDLESS_ID = 902;
 const state = {
   version: VERSION,
   phase: 'menu', // menu | howto | aim | fly | complete | failed | paused
-  mode: 'campaign', // campaign | daily | seed | endless | timeattack
+  mode: 'campaign', // campaign | daily | seed | endless | timeattack | zen
   levelId: 1,
   levelName: '',
   shotsUsed: 0,
   shotsLeft: 0,
   targetsRemaining: 0,
   collected: [],
+  // Zen Sandbox session count: every star collected in the current zen
+  // session (targets respawn, so this only ever grows). The session best
+  // is saved as save.zenBest when the player quits.
+  zenCollected: 0,
   // Shield state for this attempt: target index -> hits remaining on a
   // shielded target (2 at level start, 1 once cracked). Persists across
   // shots until the level restarts; the preview and solver read it so a
@@ -888,6 +893,17 @@ let slingshotCount = 0; // near-miss slingshots credited on the current shot
 let portalCount = 0; // portal hops on the current shot
 let bounceCount = 0; // bounce-pad reflections on the current shot
 let shieldHitCount = 0; // shield cracks on the current shot
+// Near-miss slow-mo (#31): a real-time deadline — while now < slowMoUntil
+// the animate loop runs the simulation at SLOW_MO_SCALE. The deadline is
+// real time, so the dip always restores even mid hit-stop. slowMoCount
+// latches how many dips fired on the current shot (render check reads it).
+let slowMoUntil = 0;
+let slowMoCount = 0;
+// Zen target respawn (#21): pending setTimeout ids, plus a generation
+// token — a timer from an earlier zen session must never resurrect a
+// target in a later level. beginLevel bumps zenGen and clears the timers.
+let zenGen = 0;
+let zenRespawnTimers = [];
 
 function addTrauma(amount) {
   trauma = Math.min(1, trauma + amount);
@@ -929,6 +945,13 @@ function feedback(kind, x, y) {
     slingshotCount++;
     sfx.slingshot();
     spawnBurst(x, y, 0, 0xffd166, 14, 6, 0.5);
+    // Near-miss slow-mo (#31): the bend reads better at 0.35x for a beat.
+    // Skipped under reduce motion — a time-scale dip is motion, and the
+    // real-time deadline guarantees the game never stays slow.
+    if (!settings.reduceMotion) {
+      slowMoUntil = performance.now() + SLOW_MO_MS;
+      slowMoCount++;
+    }
   } else if (kind === 'portal') {
     portalCount++;
     sfx.portal();
@@ -981,6 +1004,7 @@ function challengeBest(mode) {
     return (save.daily && save.daily.date === state.dailyDate) ? save.daily.stars : 0;
   }
   if (mode === 'seed') return save.seedBest[state.seedLabel || String(state.challengeSeed)] || 0;
+  if (mode === 'zen') return save.zenBest || 0;
   return 0;
 }
 
@@ -994,15 +1018,24 @@ function updateHUD() {
     : '';
   // Time Attack levels show the campaign best for the level — the run's
   // banked stars live on the complete screen, not in the per-level slot.
+  // Zen shows the session best as a plain count (it can exceed 3 stars).
   const best = state.mode === 'campaign' || state.mode === 'timeattack'
     ? (save.stars[state.levelId] || 0)
     : challengeBest(state.mode);
-  $('hud-stars').textContent = '★'.repeat(best) + '☆'.repeat(3 - best);
-  $('hud-par').textContent = level ? `Par ${level.par}` : '';
-  $('hud-shots').textContent = `Shots ${state.shotsUsed}/${budget}`;
-  $('hud-targets').textContent = state.targetsRemaining === 0
-    ? 'All targets collected'
-    : `Targets ${state.targetsRemaining} left`;
+  $('hud-stars').textContent = state.mode === 'zen'
+    ? `Zen best ${best} ★`
+    : '★'.repeat(best) + '☆'.repeat(3 - best);
+  $('hud-par').textContent = level
+    ? (state.mode === 'zen' ? 'Zen Sandbox — no shot limit' : `Par ${level.par}`)
+    : '';
+  $('hud-shots').textContent = state.mode === 'zen'
+    ? `Shots ${state.shotsUsed} · ∞`
+    : `Shots ${state.shotsUsed}/${budget}`;
+  $('hud-targets').textContent = state.mode === 'zen'
+    ? `★ ${state.zenCollected} collected · ${state.targetsRemaining} on field`
+    : state.targetsRemaining === 0
+      ? 'All targets collected'
+      : `Targets ${state.targetsRemaining} left`;
   // The Time Attack clock lives in the HUD mid row, gold and bold; the
   // animate loop refreshes its text once per second while the run ticks.
   const timerEl = $('hud-timer');
@@ -1135,6 +1168,7 @@ function renderStats() {
     `Daily best today: ${'★'.repeat(dailyBest)}${'☆'.repeat(3 - dailyBest)}` +
     ` · Endless best: ${save.endlessBest || 0} round${(save.endlessBest || 0) === 1 ? '' : 's'}` +
     ` · Time Attack best: ${taBest ? `${taBest.stars}/15 stars in ${formatClock(taBest.seconds)}` : 'no full clear yet'}` +
+    ` · Zen best: ${save.zenBest || 0} star${(save.zenBest || 0) === 1 ? '' : 's'} in one session` +
     ` · ${seedCount} seed${seedCount === 1 ? '' : 's'} played`;
 }
 
@@ -1462,12 +1496,21 @@ function auditFailureReason() {
   const level = levelById(state.levelId);
   if (!level) return null;
   if (!Number.isFinite(levelTime)) return 'levelTime is not finite';
-  if (!Number.isInteger(state.shotsUsed) || state.shotsUsed < 0 || state.shotsUsed > shotBudget(level)) {
+  // Zen's budget is infinite (shotBudget returns Infinity), so the shot
+  // counters have no finite upper bound there: shotsLeft is legitimately
+  // Infinity in zen, and shotsUsed just grows. A finite level keeps the
+  // strict integer-in-range checks.
+  const budget = shotBudget(level);
+  if (!Number.isInteger(state.shotsUsed) || state.shotsUsed < 0
+    || (Number.isFinite(budget) && state.shotsUsed > budget)) {
     return 'shotsUsed out of range';
   }
-  if (!Number.isInteger(state.shotsLeft) || state.shotsLeft < 0 || state.shotsLeft > shotBudget(level)) {
-    return 'shotsLeft out of range';
-  }
+  // Zen's budget is infinite, so shotsLeft is legitimately Infinity
+  // there; a finite level keeps the strict integer-in-range check.
+  const shotsLeftOk = Number.isFinite(budget)
+    ? (Number.isInteger(state.shotsLeft) && state.shotsLeft >= 0 && state.shotsLeft <= budget)
+    : (state.shotsLeft === Infinity);
+  if (!shotsLeftOk) return 'shotsLeft out of range';
   if (!Number.isInteger(state.targetsRemaining) || state.targetsRemaining < 0 || state.targetsRemaining > level.targets.length) {
     return 'targetsRemaining out of range';
   }
@@ -1492,8 +1535,18 @@ function recoverFromAudit(reason) {
   auditRecoveries++;
   lastAuditFailure = reason;
   // A corrupt flight mid-shot is a lost shot: end it cleanly so the
-  // player re-aims instead of watching a frozen comet.
+  // player re-aims instead of watching a frozen comet. The recovery
+  // gives the same lost-shot feel as the physics guard's 'invalid'
+  // path (sound + burst + announcement) — which path fires is a race
+  // between this 1s audit and the next animation frame, so both must
+  // read the same. The position falls back to the pad when the flight
+  // itself is NaN, so a bad coordinate never poisons the particles.
   if (state.phase === 'fly' && flight) {
+    const level = levelById(state.levelId);
+    const fx = Number.isFinite(flight.x) ? flight.x : (level ? level.pad.x : 0);
+    const fy = Number.isFinite(flight.y) ? flight.y : (level ? level.pad.y : 0);
+    feedback('lost', fx, fy);
+    announce('Comet flew out of bounds — shot lost.');
     flightEnding = true;
     flight = null;
     comet.visible = false;
@@ -1525,13 +1578,19 @@ function runStateAudit() {
 function beginLevel(level, mode) {
   if (!level) return;
   window.clearTimeout(shotTimer);
+  // A new level invalidates any pending zen respawns from the last one.
+  for (const t of zenRespawnTimers) window.clearTimeout(t);
+  zenRespawnTimers = [];
+  zenGen++;
   state.mode = mode;
   state.levelId = level.id;
   state.levelName = level.name;
   state.shotsUsed = 0;
   state.collected = [];
   state.shieldHits = {};
-  state.stars = mode === 'campaign' ? (save.stars[level.id] || 0) : challengeBest(mode);
+  state.zenCollected = 0;
+  state.stars = mode === 'campaign' ? (save.stars[level.id] || 0)
+    : mode === 'zen' ? 0 : challengeBest(mode);
   state.targetsRemaining = level.targets.length;
   flight = null;
   flightEnding = false;
@@ -1543,7 +1602,9 @@ function beginLevel(level, mode) {
   state.shotsLeft = shotBudget(level);
   setAim(defaultAimAngle(level, []), 0.6);
   updateHUD();
-  announce(`Level ${level.id} — ${level.name}. Par ${level.par}, ${level.targets.length} target${level.targets.length === 1 ? '' : 's'}, ${state.shotsLeft} shots.`);
+  announce(mode === 'zen'
+    ? 'Zen Sandbox — unlimited shots. Collect stars; they drift back onto the field. No fail state, just flow.'
+    : `Level ${level.id} — ${level.name}. Par ${level.par}, ${level.targets.length} target${level.targets.length === 1 ? '' : 's'}, ${state.shotsLeft} shots.`);
   $('hud').classList.remove('hidden');
   showOnly(null);
   // A hidden button keeps its focus in some browsers; drop it so the
@@ -1603,6 +1664,15 @@ function startEndlessRound(round) {
   beginLevel(level, 'endless');
 }
 
+// Zen Sandbox (#21): the handcrafted playground from physics.js —
+// unlimited shots, respawning targets, no fail state. Registered under
+// ZEN_ID (903) so levelById / shotBudget work on it like any level.
+function startZen() {
+  const level = zenLevel();
+  registerGeneratedLevel(level);
+  beginLevel(level, 'zen');
+}
+
 // Time Attack: one 4:00 clock across campaign levels 1-5. Clearing a
 // level banks its stars and advances to the next; the run ends when the
 // clock hits zero, a level runs out of shots, or all five are cleared.
@@ -1630,6 +1700,7 @@ function restartCurrent() {
   else if (state.mode === 'seed') startSeed(state.seedLabel || String(state.challengeSeed));
   else if (state.mode === 'endless') startEndlessRound(state.endlessRound);
   else if (state.mode === 'timeattack') startTimeAttack();
+  else if (state.mode === 'zen') startZen();
   else startLevel(state.levelId);
 }
 
@@ -1646,6 +1717,7 @@ function launch() {
   portalCount = 0;
   bounceCount = 0;
   shieldHitCount = 0;
+  slowMoCount = 0;
   state.phase = 'fly';
   previewLine.visible = false;
   previewDots.visible = false;
@@ -1669,11 +1741,13 @@ function endShot() {
   state.shotsLeft = Math.max(0, shotBudget(level) - state.shotsUsed);
   flight = null;
   flightEnding = false;
-  if (isLevelComplete(level, state.collected)) {
+  // Zen never completes or fails: the shot budget is infinite and the
+  // targets respawn, so every shot just ends back at the pad.
+  if (state.mode !== 'zen' && isLevelComplete(level, state.collected)) {
     completeLevel();
     return;
   }
-  if (state.shotsUsed >= shotBudget(level)) {
+  if (state.mode !== 'zen' && state.shotsUsed >= shotBudget(level)) {
     failLevel();
     return;
   }
@@ -1825,6 +1899,11 @@ function failLevel(reason) {
 
 function quitToMenu() {
   window.clearTimeout(shotTimer);
+  // Pending zen respawns belong to the session being left — drop them so
+  // a later level never sees a stale target reappear.
+  for (const t of zenRespawnTimers) window.clearTimeout(t);
+  zenRespawnTimers = [];
+  zenGen++;
   flight = null;
   flightEnding = false;
   state.phase = 'menu';
@@ -1855,6 +1934,26 @@ function resumeGame() {
 }
 
 // ---------------------------------------------------------------- flight stepping
+// Zen target respawn (#21): 1.5s after a star is collected it drifts back
+// onto the field — mesh and ring visible again, out of the collected list
+// so the next shot can take it. The generation token guards against a
+// timer from an earlier session firing after a restart or a quit.
+function respawnZenTarget(level, idx) {
+  const gen = zenGen;
+  const timer = window.setTimeout(() => {
+    if (gen !== zenGen || state.mode !== 'zen') return;
+    const i = state.collected.indexOf(idx);
+    if (i !== -1) state.collected.splice(i, 1);
+    const mesh = targetMeshes[idx];
+    if (mesh) mesh.visible = true;
+    const ring = targetRings[idx];
+    if (ring) ring.visible = true;
+    state.targetsRemaining = level.targets.length - state.collected.length;
+    updateHUD();
+  }, 1500);
+  zenRespawnTimers.push(timer);
+}
+
 function stepFlightLoop(dt) {
   if (!flight) return;
   flightAcc += dt;
@@ -1921,10 +2020,25 @@ function stepFlightLoop(dt) {
       }
       state.targetsRemaining = level.targets.length - state.collected.length;
       updateHUD();
-      announce(state.targetsRemaining === 0
-        ? 'All targets collected.'
-        : `Star collected — ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left.`);
-      if (isLevelComplete(level, state.collected)) {
+      if (state.mode === 'zen') {
+        // Zen: every collected star counts toward the session total, the
+        // session best is banked live, and the star drifts back onto the
+        // field after a short delay — the flight keeps going, the level
+        // never completes, and the next shot can collect it again.
+        state.zenCollected += tmpNewly.length;
+        if (state.zenCollected > (save.zenBest || 0)) {
+          save.zenBest = state.zenCollected;
+          persistSave();
+        }
+        for (const idx of tmpNewly) respawnZenTarget(level, idx);
+        updateHUD();
+        announce(`Star collected — ${state.zenCollected} in this Zen session.`);
+      } else {
+        announce(state.targetsRemaining === 0
+          ? 'All targets collected.'
+          : `Star collected — ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left.`);
+      }
+      if (state.mode !== 'zen' && isLevelComplete(level, state.collected)) {
         flightEnding = true;
         scheduleEndShot(700);
         break;
@@ -2253,6 +2367,12 @@ function wireButtons() {
     sfx.click();
     startTimeAttack();
   });
+  // Zen Sandbox (#21): free orbit playground, unlimited shots.
+  $('btn-zen').addEventListener('click', () => {
+    ensureAudio();
+    sfx.click();
+    startZen();
+  });
   $('btn-seed').addEventListener('click', () => {
     ensureAudio();
     if (startSeed($('seed-input').value)) {
@@ -2416,17 +2536,23 @@ function animate(now) {
     previewEndRing.scale.setScalar(s);
   }
   if (!stopped) {
-    updateParticles(dt);
-    updateShockwaves(dt);
-    updateConfetti(dt);
+    // Near-miss slow-mo (#31): while the dip is live the whole simulation
+    // runs at SLOW_MO_SCALE (0.35x) — flight, particles, planet motion —
+    // while trauma decay, the nebula and the Time Attack clock below stay
+    // on real time. slowMoScale returns 1 outside the window, under
+    // reduce motion, or on a corrupted clock, so this can never stick.
+    const sdt = dt * slowMoScale(now, slowMoUntil, settings.reduceMotion);
+    updateParticles(sdt);
+    updateShockwaves(sdt);
+    updateConfetti(sdt);
     const level = levelById(state.levelId);
     if (level) {
       // The level clock runs while aiming; during flight it advances in
       // lockstep with the simulation inside stepFlightLoop.
       if (state.phase === 'aim') {
-        levelTime += dt;
+        levelTime += sdt;
         if (levelHasMovingPlanets(level) || levelHasMovingTargets(level)) {
-          previewRefresh += dt;
+          previewRefresh += sdt;
           if (previewRefresh >= 0.15) {
             previewRefresh = 0;
             // Re-aim at the same angle/power: the preview and its readout
@@ -2436,7 +2562,8 @@ function animate(now) {
         }
       }
       // The Time Attack clock ticks while aiming or flying (never while
-      // paused, complete or failed) and fails the run at zero.
+      // paused, complete or failed) and fails the run at zero. It runs on
+      // real time — a slow-mo dip must never buy the player extra seconds.
       if (state.mode === 'timeattack' && (state.phase === 'aim' || state.phase === 'fly')) {
         state.timeLeft = Math.max(0, state.timeLeft - dt);
         const sec = Math.ceil(state.timeLeft);
@@ -2451,38 +2578,38 @@ function animate(now) {
       updateTargetMeshes();
       // Black hole accretion discs swirl; photon rings counter-rotate.
       for (const bh of blackHoleMeshes) {
-        bh.disc.rotation.z += dt * 0.9;
-        bh.ring.rotation.z -= dt * 0.4;
+        bh.disc.rotation.z += sdt * 0.9;
+        bh.ring.rotation.z -= sdt * 0.4;
       }
       // Portal discs swirl and their rings breathe, so twins read as live.
       for (const portal of portalMeshes) {
-        portal.disc.rotation.z += dt * 1.6;
+        portal.disc.rotation.z += sdt * 1.6;
         const pulse = 1 + 0.06 * Math.sin(t * 3 + portal.group.position.x);
         portal.ring.scale.setScalar(portal.base * pulse);
       }
       // Shield rings turn slowly around their target.
       for (const shield of shieldMeshes) {
-        if (shield && shield.visible) shield.rotation.z += dt * 0.6;
+        if (shield && shield.visible) shield.rotation.z += sdt * 0.6;
       }
       targetMeshes.forEach((m, i) => {
         if (!m.visible) return;
         const r = level.targets[i].r;
         m.scale.setScalar(r * (1 + 0.12 * Math.sin(now * 0.004 + i * 1.7)));
-        m.rotation.y += dt * 0.8;
-        m.rotation.x += dt * 0.4;
+        m.rotation.y += sdt * 0.8;
+        m.rotation.x += sdt * 0.4;
       });
       targetRings.forEach((ring, i) => {
         if (!ring.visible) return;
-        ring.rotation.z += dt * 0.5;
+        ring.rotation.z += sdt * 0.5;
       });
     }
     if (state.phase === 'fly' && flight) {
-      stepFlightLoop(dt);
+      stepFlightLoop(sdt);
       if (flight && comet.visible) {
         trailHistory.push([flight.x, flight.y]);
         if (trailHistory.length > TRAIL_MAX) trailHistory.shift();
         updateTrailLine();
-        comet.rotation.y += dt * 3;
+        comet.rotation.y += sdt * 3;
       }
     }
   }
@@ -2506,6 +2633,8 @@ window.__orbit = {
   playSeed: (raw) => { ensureAudio(); return startSeed(raw); },
   playEndless: () => { ensureAudio(); startEndless(); },
   playTimeAttack: () => { ensureAudio(); startTimeAttack(); },
+  // Zen Sandbox (Block 15, #21): free orbit playground, unlimited shots.
+  playZen: () => { ensureAudio(); startZen(); },
   // Best collecting shot from the current aim clock (coarse grid, launch
   // times from now up to 3s ahead): the render check waits for the clock
   // to reach the returned t0, then launches — on moving-planet levels
@@ -2538,6 +2667,8 @@ window.__orbit = {
     timeAttackStars: state.timeAttackStars,
     timeAttackIndex: state.timeAttackIndex,
     timeAttackBest: save.timeAttackBest ? { ...save.timeAttackBest } : null,
+    zenCollected: state.zenCollected,
+    zenBest: save.zenBest || 0,
   }),
   info: () => {
     const level = levelById(state.levelId);
@@ -2577,6 +2708,10 @@ window.__orbit = {
     portalCount,
     bounceCount,
     shieldHitCount,
+    // Near-miss slow-mo (#31): how many dips fired on the current shot,
+    // and whether one is live right now (real-time deadline).
+    slowMoCount,
+    slowMoActive: performance.now() < slowMoUntil,
   }),
   // Visual polish state (Block 12, #28/#29/#30) for the render check:
   // the trail ribbon's live length, the nebula clock, how many planet
