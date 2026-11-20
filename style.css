@@ -39,6 +39,49 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* Crash flash (Block 17, #32): fullscreen red flash on a planet crash.
+   Above the canvas, below the HUD (z 5) and overlays (z 20); the class
+   goes on for 140ms and the transition fades it out over 0.6s. */
+#crash-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center,
+    rgba(255, 59, 48, 0.5) 0%, rgba(255, 59, 48, 0.22) 60%,
+    rgba(255, 59, 48, 0.08) 100%);
+  opacity: 0;
+  transition: opacity 0.6s ease-out;
+}
+#crash-flash.flash-on {
+  opacity: 1;
+  transition: opacity 0.05s ease-in;
+}
+
+/* Gravity-assist bonus (Block 17, #4): gold HUD chip, hidden until the
+   first slingshot pays; gold line on the level-complete screen. */
+.hud-bonus {
+  color: var(--gold);
+  font-weight: 600;
+}
+.complete-bonus {
+  color: var(--gold);
+  font-size: 15px;
+  margin: 4px 0 0;
+}
+
+/* Music style cycler row (Block 17, #36): label left, button right,
+   matching the toggle rows in the menu and pause panels. */
+.style-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 4px;
+  font-size: 15px;
+  text-align: left;
+}
+
 /* Screen-reader-only live region (#50): takes no space, stays readable
    by assistive tech, and never flashes on screen. */
 .sr-only {

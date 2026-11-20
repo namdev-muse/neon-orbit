@@ -17,6 +17,9 @@
 </head>
 <body>
 <div id="game-container"></div>
+<!-- Crash flash (Block 17, #32): fullscreen red flash on a planet crash,
+     rate-limited and suppressed under reduce motion / reduce flashing. -->
+<div id="crash-flash" class="crash-flash" aria-hidden="true"></div>
 
 <!-- HUD -->
 <div id="hud" class="hidden">
@@ -28,6 +31,7 @@
     <span id="hud-par">Par 2</span>
     <span id="hud-shots">Shots 0/2</span>
     <span id="hud-targets">Targets 1 left</span>
+    <span id="hud-bonus" class="hud-bonus hidden">Bonus +0</span>
     <span id="hud-timer" class="hud-timer hidden">⏱ 4:00</span>
   </div>
   <div class="hud-right">
@@ -55,7 +59,7 @@
   <div class="panel">
     <h1>NEON ORBIT</h1>
     <p class="tagline">Slingshot your comet around planets. Collect every star.</p>
-    <p class="version">v0.16.0 &middot; Three.js 0.160.0</p>
+    <p class="version">v0.17.0 &middot; Three.js 0.160.0</p>
     <button id="btn-play" class="btn primary" type="button">Play</button>
     <button id="btn-daily" class="btn" type="button">Daily Orbit</button>
     <button id="btn-endless" class="btn" type="button">Endless Orbit</button>
@@ -78,6 +82,15 @@
     <label class="toggle-row">Music
       <input id="music-toggle-menu" type="checkbox" checked aria-label="Music on or off">
     </label>
+    <label class="toggle-row">Sound effects
+      <input id="sfx-toggle-menu" type="checkbox" checked aria-label="Sound effects on or off">
+    </label>
+    <label class="toggle-row">Reduce flashing
+      <input id="reduce-flashing-menu" type="checkbox" aria-label="Reduce flashing — no crash flash or bright flashes">
+    </label>
+    <div class="style-row"><span>Music style</span>
+      <button id="btn-music-style-menu" class="btn small" type="button" aria-label="Cycle music style"><span id="music-style-label-menu">Nebula</span> ▸</button>
+    </div>
     <div id="campaign-progress" class="campaign-progress" aria-label="Campaign progress">
       <div class="campaign-progress-text"><span id="campaign-progress-label">Campaign — 0/12 cleared</span><span id="campaign-progress-stars">0 / 36 stars</span></div>
       <div class="campaign-progress-bar"><div id="campaign-progress-fill"></div></div>
@@ -98,7 +111,7 @@
       <li>Collect <strong>every magenta target</strong> before you run out of shots.</li>
       <li>Crashing into a planet or flying out of bounds <strong>loses the shot</strong>.</li>
       <li><strong>Black holes</strong> pull hard and <strong>swallow</strong> comets that cross their event horizon — arc around them, never through them.</li>
-      <li>Skim close past a planet for a <strong>slingshot</strong> flash — time briefly slows so you can watch the bend — and watch the shockwave ring when you collect a star.</li>
+      <li>Skim close past a planet for a <strong>slingshot</strong> flash — time briefly slows so you can watch the bend — and watch the shockwave ring when you collect a star. Each slingshot pays a <strong>+100 gravity-assist bonus</strong>, shown in the HUD and on the level-complete screen.</li>
       <li><strong>Moving planets</strong> orbit their centre (the faint ring shows the path). The trajectory preview follows them — time your launch for when the bend lines up.</li>
       <li><strong>Portals</strong> come in matching pairs — fly into one and you exit its twin at the same speed. <strong>Shielded targets</strong> (white ring) take two hits: the first cracks the shield, the second collects the star. <strong>Bounce pads</strong> (lime) reflect the comet like a mirror.</li>
       <li><strong>Moving targets</strong> drift on small orbits (the faint ring shows the path). Lead your shot so the comet meets the target, not where it was.</li>
@@ -108,6 +121,7 @@
       <li>Type a <strong>seed</strong> (or open a <strong>?seed=</strong> link) to replay the exact same generated level as a friend.</li>
       <li>Beat par for <strong>3 stars</strong>. Finish a level to unlock the next one.</li>
       <li><strong>Achievements</strong> track your career — first launch, one-shot clears, portal hops, slingshots and more. Check them from the main menu.</li>
+      <li><strong>Audio Settings</strong> in the menu (and the pause menu): pick a music style — <strong>Nebula</strong>, <strong>Pulse</strong> or <strong>Deep Field</strong> — toggle sound effects or music, and turn on <strong>reduce flashing</strong> to skip the red crash flash.</li>
     </ul>
     <h3>Controls</h3>
     <ul class="howto-list">
@@ -128,6 +142,7 @@
     <h2>Level Complete</h2>
     <p id="complete-stars" class="big-stars">★★★</p>
     <p id="complete-shots">Finished in 2 shots (par 2)</p>
+    <p id="complete-bonus" class="complete-bonus"></p>
     <button id="btn-next" class="btn primary" type="button">Next Level</button>
     <button id="btn-replay" class="btn" type="button">Replay Level</button>
     <button id="btn-menu-complete" class="btn" type="button">Main Menu</button>
@@ -151,7 +166,7 @@
   <div class="panel">
     <h2>My Stats</h2>
     <table id="stats-table" class="stats-table" aria-label="Best stars per level">
-      <thead><tr><th>Level</th><th>Stars</th><th>Par</th></tr></thead>
+      <thead><tr><th>Level</th><th>Stars</th><th>Par</th><th>Bonus</th></tr></thead>
       <tbody id="stats-body"></tbody>
     </table>
     <p id="stats-totals" class="stats-totals"></p>
@@ -190,6 +205,15 @@
     <label class="toggle-row">Music
       <input id="music-toggle-pause" type="checkbox" checked aria-label="Music on or off">
     </label>
+    <label class="toggle-row">Sound effects
+      <input id="sfx-toggle-pause" type="checkbox" checked aria-label="Sound effects on or off">
+    </label>
+    <label class="toggle-row">Reduce flashing
+      <input id="reduce-flashing-pause" type="checkbox" aria-label="Reduce flashing — no crash flash or bright flashes">
+    </label>
+    <div class="style-row"><span>Music style</span>
+      <button id="btn-music-style-pause" class="btn small" type="button" aria-label="Cycle music style"><span id="music-style-label-pause">Nebula</span> ▸</button>
+    </div>
     <label class="slider-row">Volume
       <input id="volume-range-pause" type="range" min="0" max="100" value="60" aria-label="Volume">
       <span id="volume-value-pause">60%</span>

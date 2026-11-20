@@ -1,4 +1,4 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.16.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.17.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
@@ -15,9 +15,12 @@ import {
   clampZoom, isTapGesture, focusStep, createPerfGuard, PERF_LEVELS,
   slowMoScale, SLOW_MO_MS, zenLevel, ZEN_ID,
   ACHIEVEMENTS, checkAchievements, defaultStats,
+  MUSIC_STYLES, musicStyleById, nextMusicStyleId,
+  flashAllowed, FLASH_MIN_INTERVAL_MS,
+  GRAVITY_ASSIST_POINTS, gravityAssistPoints,
 } from './physics.js';
 
-export const VERSION = '0.16.0';
+export const VERSION = '0.17.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -75,6 +78,10 @@ const state = {
   timeLeft: 0,
   timeAttackIndex: 0,
   timeAttackStars: 0,
+  // Gravity-assist bonus (Block 17, #4): points banked on this level
+  // attempt (+100 per slingshot near-miss) and how many slingshots paid.
+  assistBonus: 0,
+  assistCount: 0,
 };
 
 function loadSave() {
@@ -104,9 +111,16 @@ function loadSettings() {
       zoom: clampZoom(raw.zoom),
       reduceMotion: typeof raw.reduceMotion === 'boolean' ? raw.reduceMotion : osReduceMotion,
       music: typeof raw.music === 'boolean' ? raw.music : true,
+      // Audio settings (Block 17, #36): SFX toggle, music style (validated
+      // against the style table — an unknown id falls back to nebula) and
+      // reduce flashing (defaults to the OS motion preference like reduce
+      // motion, so flashing-sensitive players get it on first visit).
+      sfx: typeof raw.sfx === 'boolean' ? raw.sfx : true,
+      musicStyle: typeof raw.musicStyle === 'string' ? musicStyleById(raw.musicStyle).id : 'nebula',
+      reduceFlashing: typeof raw.reduceFlashing === 'boolean' ? raw.reduceFlashing : osReduceMotion,
     };
   } catch {
-    return { muted: false, shake: 1, zoom: 1, reduceMotion: osReduceMotion, music: true };
+    return { muted: false, shake: 1, zoom: 1, reduceMotion: osReduceMotion, music: true, sfx: true, musicStyle: 'nebula', reduceFlashing: osReduceMotion };
   }
 }
 function persistSettings() {
@@ -146,8 +160,6 @@ let musicStep = 0;
 let nextNoteTime = 0;
 let lastSfx = null;
 let lastSfxAt = 0;
-const MUSIC_ROOTS = [55, 43.65, 65.41, 49]; // A1 F1 C2 G1
-const ARP_STEPS = [2, 3, 4, 3]; // chord-tone multipliers for the arp layer
 
 function ensureAudio() {
   if (!audioCtx) {
@@ -195,12 +207,16 @@ function toneAt(freq, at, dur, type, vol, slideTo, bus) {
 }
 
 function tone(freq, dur, type, vol, slideTo, delay) {
-  if (!audioCtx) return;
+  // SFX toggle (#36): off silences the SFX bus at the source. recordSfx
+  // still fires in each sfx method, so the render check can assert a
+  // sound fired even with SFX off; music uses toneAt directly and is
+  // unaffected.
+  if (!audioCtx || !settings.sfx) return;
   toneAt(freq, audioCtx.currentTime + (delay || 0), dur, type, vol, slideTo || null, sfxGain);
 }
 
 function noiseBurst(dur, vol, cutoff) {
-  if (!audioCtx || !sfxGain) return;
+  if (!audioCtx || !sfxGain || !settings.sfx) return;
   const len = Math.max(1, Math.floor(audioCtx.sampleRate * dur));
   const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
   const d = buf.getChannelData(0);
@@ -311,18 +327,22 @@ function musicIntensity() {
 }
 
 function scheduleMusicStep(step, at) {
-  const bar = Math.floor(step / 8) % MUSIC_ROOTS.length;
-  const root = MUSIC_ROOTS[(state.levelId - 1 + bar) % MUSIC_ROOTS.length];
+  // The music style (#36) drives the scheduler: its root progression,
+  // arp chord tones, step length and waveforms. The bar still rotates by
+  // level so later levels sound different within any style.
+  const style = musicStyleById(settings.musicStyle);
+  const bar = Math.floor(step / 8) % style.roots.length;
+  const root = style.roots[(state.levelId - 1 + bar) % style.roots.length];
   const intensity = musicIntensity();
   // Layer 1 — bass, always on.
-  if (step % 2 === 0) toneAt(root, at, 0.5, 'triangle', 0.045, null, musicGain);
+  if (step % 2 === 0) toneAt(root, at, 0.5, style.bass, style.bassVol, null, musicGain);
   if (step % 8 === 4) toneAt(root * 2, at, 0.4, 'sine', 0.035, null, musicGain);
   if (step % 16 === 14) toneAt(880, at, 0.3, 'sine', 0.022, null, musicGain);
   // Layer 2 — arpeggio, levels 3+ (intensity >= 1): chord tones on the
-  // off-beats, cycling root*2 / *3 / *4 / *3.
+  // off-beats, cycling the style's arp multipliers.
   if (intensity >= 1 && step % 2 === 1) {
-    const mult = ARP_STEPS[Math.floor(step / 2) % ARP_STEPS.length];
-    toneAt(root * mult, at, 0.22, 'sine', 0.02, null, musicGain);
+    const mult = style.arp[Math.floor(step / 2) % style.arp.length];
+    toneAt(root * mult, at, 0.22, style.arpType, style.arpVol, null, musicGain);
   }
   // Layer 3 — tension pulse, last shot only (intensity 2): a short, fast
   // tick on every step that pushes the tempo of the moment.
@@ -340,7 +360,7 @@ function startMusic() {
     while (nextNoteTime < audioCtx.currentTime + 0.5) {
       scheduleMusicStep(musicStep, nextNoteTime);
       musicStep++;
-      nextNoteTime += 0.25;
+      nextNoteTime += musicStyleById(settings.musicStyle).stepMs / 1000;
     }
   }, 200);
 }
@@ -362,6 +382,38 @@ function setMusic(on) {
   updateSettingsToggles();
 }
 
+// SFX toggle (#36): persisted; the guard in tone()/noiseBurst() does the
+// silencing, so music keeps playing and lastSfx keeps recording.
+function setSfx(on) {
+  settings.sfx = !!on;
+  persistSettings();
+  updateSettingsToggles();
+}
+
+// Music style cycler (#36): nebula -> pulse -> deep field -> nebula.
+// Switching restarts the scheduler on the new style's step so the change
+// is audible immediately when music is on; an unknown id falls back to
+// nebula through musicStyleById.
+function setMusicStyle(id) {
+  settings.musicStyle = musicStyleById(id).id;
+  persistSettings();
+  updateMusicStyleLabels();
+  if (musicTimer) {
+    stopMusic();
+    if (settings.music) startMusic();
+  }
+}
+function cycleMusicStyle() {
+  setMusicStyle(nextMusicStyleId(settings.musicStyle));
+}
+function updateMusicStyleLabels() {
+  const name = musicStyleById(settings.musicStyle).name;
+  for (const suffix of ['menu', 'pause']) {
+    const el = document.getElementById(`music-style-label-${suffix}`);
+    if (el) el.textContent = name;
+  }
+}
+
 // Reduce motion + music checkboxes live in the menu and the pause menu;
 // every change syncs all four so the two panels never disagree.
 function updateSettingsToggles() {
@@ -370,6 +422,10 @@ function updateSettingsToggles() {
     if (rm) rm.checked = settings.reduceMotion;
     const mu = document.getElementById(`music-toggle-${suffix}`);
     if (mu) mu.checked = settings.music;
+    const sx = document.getElementById(`sfx-toggle-${suffix}`);
+    if (sx) sx.checked = settings.sfx;
+    const rf = document.getElementById(`reduce-flashing-${suffix}`);
+    if (rf) rf.checked = settings.reduceFlashing;
   }
 }
 
@@ -917,6 +973,33 @@ function addTrauma(amount) {
   trauma = Math.min(1, trauma + amount);
   peakTrauma = Math.max(peakTrauma, trauma);
 }
+// Crash flash (Block 17, #32): a fullscreen red flash on a planet crash,
+// rate-limited to 3/s and suppressed under reduce motion / reduce
+// flashing (the game-feel skill caps large flashes there). The count is
+// latched so the render check can assert it fired after the flash has
+// already faded; the class comes off 140ms after it goes on and the CSS
+// transition fades it out over 0.6s.
+let crashFlashCount = 0;
+let crashFlashSuppressed = 0;
+let lastCrashFlashAt = -Infinity;
+let crashFlashTimer = 0;
+function crashFlash() {
+  if (!flashAllowed(performance.now(), lastCrashFlashAt,
+    settings.reduceMotion || settings.reduceFlashing)) {
+    crashFlashSuppressed++;
+    return false;
+  }
+  lastCrashFlashAt = performance.now();
+  crashFlashCount++;
+  const el = $('crash-flash');
+  if (el) {
+    el.classList.add('flash-on');
+    window.clearTimeout(crashFlashTimer);
+    crashFlashTimer = window.setTimeout(() => el.classList.remove('flash-on'), 140);
+  }
+  return true;
+}
+
 function hitStop(seconds) {
   hitStopToken++;
   hitStopUntil = performance.now() + seconds * 1000;
@@ -942,6 +1025,7 @@ function feedback(kind, x, y) {
   } else if (kind === 'crash') {
     sfx.crash();
     recordStat('crashes');
+    crashFlash();
     spawnBurst(x, y, 0, 0xff6b35, 40, 9, 0.9);
     spawnShockwave(x, y, 0xff6b35, 6, 0.7);
   } else if (kind === 'lost') {
@@ -955,9 +1039,14 @@ function feedback(kind, x, y) {
     spawnShockwave(x, y, 0xa855f7, 5, 0.7);
   } else if (kind === 'slingshot') {
     slingshotCount++;
+    // Gravity-assist bonus (#4): each near-miss pays +100, banked for
+    // the level attempt and shown in the HUD / on the complete screen.
+    state.assistCount++;
+    state.assistBonus += GRAVITY_ASSIST_POINTS;
     recordStat('slingshots');
     sfx.slingshot();
     spawnBurst(x, y, 0, 0xffd166, 14, 6, 0.5);
+    updateHUD();
     // Near-miss slow-mo (#31): the bend reads better at 0.35x for a beat.
     // Skipped under reduce motion — a time-scale dip is motion, and the
     // real-time deadline guarantees the game never stays slow.
@@ -1095,6 +1184,11 @@ function updateHUD() {
     : state.targetsRemaining === 0
       ? 'All targets collected'
       : `Targets ${state.targetsRemaining} left`;
+  // Gravity-assist bonus (#4): hidden until the first slingshot pays,
+  // then it shows the attempt's banked bonus in gold.
+  const bonusEl = $('hud-bonus');
+  bonusEl.classList.toggle('hidden', state.assistBonus <= 0);
+  bonusEl.textContent = `Bonus +${state.assistBonus}`;
   // The Time Attack clock lives in the HUD mid row, gold and bold; the
   // animate loop refreshes its text once per second while the run ticks.
   const timerEl = $('hud-timer');
@@ -1212,7 +1306,11 @@ function renderStats() {
       : ('★'.repeat(stars) + '☆'.repeat(3 - stars));
     const parCell = document.createElement('td');
     parCell.textContent = `Par ${level.par}`;
-    row.append(nameCell, starCell, parCell);
+    const bonusCell = document.createElement('td');
+    const bestBonus = (save.bestBonus && save.bestBonus[level.id]) || 0;
+    bonusCell.textContent = level.id > save.unlocked ? '—'
+      : bestBonus > 0 ? `+${bestBonus}` : '—';
+    row.append(nameCell, starCell, parCell, bonusCell);
     body.appendChild(row);
   }
   const earned = totalStars(save);
@@ -1700,6 +1798,8 @@ function beginLevel(level, mode) {
   state.collected = [];
   state.shieldHits = {};
   state.zenCollected = 0;
+  state.assistBonus = 0;
+  state.assistCount = 0;
   state.stars = mode === 'campaign' ? (save.stars[level.id] || 0)
     : mode === 'zen' ? 0 : challengeBest(mode);
   state.targetsRemaining = level.targets.length;
@@ -1881,6 +1981,12 @@ function completeLevel() {
     if (!save.stars[state.levelId] || save.stars[state.levelId] < stars) {
       save.stars[state.levelId] = stars;
     }
+    // Gravity-assist best (#4): the attempt's banked bonus is the new
+    // per-level best when it beats the saved one.
+    if (!save.bestBonus) save.bestBonus = {};
+    if (state.assistBonus > (save.bestBonus[state.levelId] || 0)) {
+      save.bestBonus[state.levelId] = state.assistBonus;
+    }
     if (state.levelId < LEVELS.length && save.unlocked <= state.levelId) {
       save.unlocked = state.levelId + 1;
       unlockedNew = true;
@@ -1935,6 +2041,15 @@ function completeLevel() {
   }
   $('complete-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
   let shotsLine = `Finished in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'} (par ${level.par})`;
+  // Gravity-assist bonus (#4) on the complete screen: what this attempt
+  // banked, and the saved best for campaign levels.
+  const completeBonusEl = $('complete-bonus');
+  const bestBonus = state.mode === 'campaign'
+    ? ((save.bestBonus && save.bestBonus[state.levelId]) || 0) : 0;
+  completeBonusEl.textContent = state.assistBonus > 0
+    ? `Gravity-assist bonus: +${state.assistBonus} (${state.assistCount} slingshot${state.assistCount === 1 ? '' : 's'})`
+      + (state.mode === 'campaign' ? ` · Best +${bestBonus}` : '')
+    : 'No gravity-assist bonus this run — skim a planet to earn +100 per slingshot.';
   announce(`Level complete — ${stars} star${stars === 1 ? '' : 's'} in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'}.`);
   if (state.mode === 'daily' && save.daily) {
     shotsLine += ` · Daily best: ${'★'.repeat(save.daily.stars)}${'☆'.repeat(3 - save.daily.stars)}`;
@@ -2582,8 +2697,34 @@ function wireButtons() {
         setMusic(mu.checked);
       });
     }
+    // Audio settings (#36): SFX toggle + reduce-flashing toggle, mirrored
+    // in the menu and the pause menu, and the music style cycler button.
+    const sx = $(`sfx-toggle-${suffix}`);
+    if (sx) {
+      sx.addEventListener('change', () => {
+        ensureAudio();
+        setSfx(sx.checked);
+      });
+    }
+    const rf = $(`reduce-flashing-${suffix}`);
+    if (rf) {
+      rf.addEventListener('change', () => {
+        settings.reduceFlashing = rf.checked;
+        persistSettings();
+        updateSettingsToggles();
+      });
+    }
+    const ms = $(`btn-music-style-${suffix}`);
+    if (ms) {
+      ms.addEventListener('click', () => {
+        ensureAudio();
+        sfx.click();
+        cycleMusicStyle();
+      });
+    }
   }
   updateSettingsToggles();
+  updateMusicStyleLabels();
 }
 
 // ---------------------------------------------------------------- resize + context loss
@@ -2849,6 +2990,9 @@ window.__orbit = {
     intensity: musicIntensity(),
     lastSfx,
     lastSfxAt,
+    sfx: settings.sfx,
+    musicStyle: settings.musicStyle,
+    musicStyleName: musicStyleById(settings.musicStyle).name,
   }),
   feedbackState: () => ({
     trauma,
@@ -2916,10 +3060,50 @@ window.__orbit = {
     reduceMotion: settings.reduceMotion,
     music: settings.music,
     shake: settings.shake,
+    sfx: settings.sfx,
+    musicStyle: settings.musicStyle,
+    reduceFlashing: settings.reduceFlashing,
     lastAnnouncement: (() => { const el = document.getElementById('sr-status'); return el ? el.textContent : ''; })(),
     osReduceMotion: (() => {
       try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
     })(),
+  }),
+  // Audio settings (Block 17, #36) + crash flash (#32) + gravity-assist
+  // bonus (#4) state for the render check, plus a test-only settings
+  // setter (validated keys only) so the check can flip a toggle and
+  // watch the game react.
+  setSetting: (key, value) => {
+    if (key === 'sfx') setSfx(value);
+    else if (key === 'musicStyle') setMusicStyle(value);
+    else if (key === 'reduceFlashing') {
+      settings.reduceFlashing = !!value;
+      persistSettings();
+      updateSettingsToggles();
+    } else if (key === 'reduceMotion') {
+      settings.reduceMotion = !!value;
+      persistSettings();
+      updateSettingsToggles();
+    } else if (key === 'music') setMusic(value);
+    else return false;
+    return true;
+  },
+  cycleMusicStyle: () => {
+    cycleMusicStyle();
+    return settings.musicStyle;
+  },
+  flashState: () => ({
+    flashes: crashFlashCount,
+    suppressed: crashFlashSuppressed,
+    lastFlashAt: lastCrashFlashAt,
+    visible: (() => {
+      const el = document.getElementById('crash-flash');
+      return el ? el.classList.contains('flash-on') : false;
+    })(),
+  }),
+  assistState: () => ({
+    bonus: state.assistBonus,
+    count: state.assistCount,
+    best: { ...(save.bestBonus || {}) },
   }),
   // Achievements state (Block 16) for the render check: the unlocked
   // ids, the total, the lifetime stats and the save schema version.

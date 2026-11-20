@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.16.0';
+export const VERSION = '0.17.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -33,6 +33,37 @@ export const FEEDBACK = {
   crash: { tier: 'large', trauma: 0.85, hitStop: 0.12 },
 };
 
+// Music styles (Block 17, #36): three scheduler presets for the audio
+// settings panel's style cycler. 'nebula' is the original Block 5 sound
+// (same roots, arp and 250ms step), so the default style changes nothing
+// for existing players; 'pulse' is faster and punchier (square bass,
+// 200ms step), 'deep' is slower and lower (sine bass, 333ms step).
+// Pure data + lookup helpers so Node tests can drive the cycler.
+export const MUSIC_STYLES = [
+  { id: 'nebula', name: 'Nebula', roots: [55, 43.65, 65.41, 49], arp: [2, 3, 4, 3], stepMs: 250, bass: 'triangle', arpType: 'sine', bassVol: 0.045, arpVol: 0.02 },
+  { id: 'pulse', name: 'Pulse', roots: [49, 55, 65.41, 58.27], arp: [3, 4, 2, 4], stepMs: 200, bass: 'square', arpType: 'triangle', bassVol: 0.03, arpVol: 0.018 },
+  { id: 'deep', name: 'Deep Field', roots: [36.71, 43.65, 32.7, 49], arp: [2, 2, 3, 5], stepMs: 333, bass: 'sine', arpType: 'sine', bassVol: 0.06, arpVol: 0.022 },
+];
+export function musicStyleById(id) {
+  return MUSIC_STYLES.find((s) => s.id === id) || MUSIC_STYLES[0];
+}
+export function nextMusicStyleId(id) {
+  const i = MUSIC_STYLES.findIndex((s) => s.id === id);
+  return MUSIC_STYLES[(i + 1) % MUSIC_STYLES.length].id;
+}
+
+// Crash flash (Block 17, #32): a fullscreen red flash on a planet crash,
+// rate-limited to 3 per second (the game-feel skill caps large flashes
+// there) and suppressed entirely under reduce-flashing / reduce-motion.
+// Pure helper so Node tests can drive the limiter.
+export const FLASH_MIN_INTERVAL_MS = 333;
+export function flashAllowed(nowMs, lastFlashMs, reduceFlashing) {
+  if (reduceFlashing) return false;
+  if (typeof nowMs !== 'number' || !Number.isFinite(nowMs)) return false;
+  if (typeof lastFlashMs !== 'number' || !Number.isFinite(lastFlashMs)) return true;
+  return nowMs - lastFlashMs >= FLASH_MIN_INTERVAL_MS;
+}
+
 // Near-miss slow-mo (Block 15, #31): a close slingshot dips the time
 // scale to SLOW_MO_SCALE for SLOW_MO_MS of real time, so the player can
 // watch the bend. Pure helper so Node tests can drive it: 1 outside the
@@ -54,6 +85,15 @@ export const NEAR_MISS_BAND = 2.0;
 export function isNearMiss(dist, planetRadius) {
   const surface = planetRadius + COMET_RADIUS;
   return dist > surface && dist < surface + NEAR_MISS_BAND;
+}
+
+// Gravity-assist bonus (Block 17, #4): every slingshot near-miss pays
+// GRAVITY_ASSIST_POINTS, banked per level attempt and shown in the HUD
+// and on the level-complete screen; the best per campaign level is saved.
+export const GRAVITY_ASSIST_POINTS = 100;
+export function gravityAssistPoints(slingshots) {
+  if (typeof slingshots !== 'number' || !Number.isFinite(slingshots)) return 0;
+  return Math.max(0, Math.floor(slingshots)) * GRAVITY_ASSIST_POINTS;
 }
 
 // ---------------------------------------------------------------- levels
@@ -851,7 +891,7 @@ export function defaultSave() {
   return {
     version: SAVE_VERSION, stars: {}, unlocked: 1, seenHowTo: false,
     daily: null, seedBest: {}, endlessBest: 0, timeAttackBest: null,
-    zenBest: 0, stats: defaultStats(), achievements: [],
+    zenBest: 0, stats: defaultStats(), achievements: [], bestBonus: {},
   };
 }
 
@@ -927,6 +967,21 @@ function sanitizeAchievements(raw) {
   return out;
 }
 
+// Gravity-assist bests (Block 17, #4): { levelId: best bonus points } —
+// campaign levels only, integers clamped to 0..9999, anything else dropped.
+function sanitizeBestBonus(raw) {
+  const out = {};
+  if (raw && typeof raw === 'object') {
+    for (const [k, v] of Object.entries(raw)) {
+      const id = Number(k);
+      if (LEVELS.some((l) => l.id === id) && Number.isInteger(v)) {
+        out[id] = Math.max(0, Math.min(9999, v));
+      }
+    }
+  }
+  return out;
+}
+
 // stars: { levelId: 0..3 }, unlocked: highest unlocked level id.
 // daily: { date: 'YYYY-MM-DD', stars: 0..3 } — best on today's daily level.
 // seedBest: { seedLabel: 0..3 } — best stars per shared seed (capped at 100).
@@ -937,6 +992,7 @@ function sanitizeAchievements(raw) {
 // version: save schema version (SAVE_VERSION); v1 saves have no field and
 // migrate on load. stats: lifetime counters (defaultStats). achievements:
 // unlocked achievement ids, validated against ACHIEVEMENTS on load/write.
+// bestBonus: best gravity-assist bonus points per campaign level (#4).
 export function serializeSave(save) {
   const daily = save.daily && typeof save.daily.date === 'string'
     && /^\d{4}-\d{2}-\d{2}$/.test(save.daily.date)
@@ -970,6 +1026,7 @@ export function serializeSave(save) {
       ? Math.max(0, Math.min(999, save.zenBest)) : 0,
     stats: sanitizeStats(save.stats),
     achievements: sanitizeAchievements(save.achievements),
+    bestBonus: sanitizeBestBonus(save.bestBonus),
   });
 }
 
@@ -1022,6 +1079,7 @@ export function parseSave(json) {
     save.version = SAVE_VERSION;
     save.stats = sanitizeStats(raw.stats);
     save.achievements = sanitizeAchievements(raw.achievements);
+    save.bestBonus = sanitizeBestBonus(raw.bestBonus);
     return save;
   } catch {
     return defaultSave();
