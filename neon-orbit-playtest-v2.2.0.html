@@ -6506,6 +6506,29 @@ if (!save.seenHowTo) {
 window.setInterval(runStateAudit, 1000);
 requestAnimationFrame(animate);
 
+// PLAYTEST-ONLY (not part of the game): the playtest browser cannot open
+// DevTools, so the console hooks are unreachable there. Query params on
+// the hosted preview copy drive the same hooks on load:
+//   ?unlock=all           -> unlock the whole campaign (menu shows 12)
+//   &level=N              -> start level N directly
+//   &aim=ANGLE,POWER      -> preset the aim (degrees, 0..1) once the
+//                            level is up, so a known-good shot can be
+//                            launched with Space. Example:
+//   ?unlock=all&level=7&aim=294,0.25
+try {
+  const q = new URLSearchParams(location.search);
+  if (q.get('unlock') === 'all') window.__orbit.unlockAll();
+  const lvl = parseInt(q.get('level') || '', 10);
+  if (Number.isFinite(lvl) && lvl >= 1 && lvl <= LEVELS.length) {
+    window.__orbit.selectLevel(lvl);
+    const aim = (q.get('aim') || '').split(',');
+    const a = parseFloat(aim[0]), p = parseFloat(aim[1]);
+    if (Number.isFinite(a) && Number.isFinite(p)) {
+      setTimeout(() => window.__orbit.aim((a * Math.PI) / 180, p), 600);
+    }
+  }
+} catch (e) { /* playtest helper only; never break the game */ }
+
 </script>
 </body>
 </html>
