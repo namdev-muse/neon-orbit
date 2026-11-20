@@ -680,3 +680,111 @@ Audio polish + music variation, the crash flash, and the gravity-assist bonus.
   reduce flashing suppresses the flash, grazing Level 4 banks +100 with
   the HUD chip and complete-screen line, best bonus +100 saved and shown
   in My Stats, full campaign sweep).
+
+## Rebuild Block 1 — 2026-11-20 11:20 Asia/Bangkok (v2.0.0)
+
+The v0.x game was judged slop and rebuilt from scratch. What was wrong:
+Level 1 was a giant empty disc with one planet and one target; the "3D"
+read flat; the core loop was aim once and watch the comet fly; the bot
+cleared every level in 1–2 shots. A playtest audit scored it 5/10 — the
+prediction oracle ("Predicted: target hit") was the single worst thing,
+Level 1 was solvable by a plain click, Level 3 needed 1° precision the
+controls couldn't deliver, and levels 1–3 looked identical. The menu was
+a static flat panel with zero hover feedback and level buttons clipped
+at the bottom.
+
+- **New core: mid-flight thrust.** Launch with slingshot aim, then steer
+  the comet in flight with limited fuel (100 tank, 32/s burn, 15 accel,
+  +40 per fuel orb). Gravity bends the path; thrust lets you correct,
+  orbit a planet, thread gaps. The flight IS the game. A greedy pursuit
+  solver (`thrustPolicyFor`, cruise speed 9, burn only when the velocity
+  error exceeds 1.0) proves every level is flyable in par — and the
+  anti-slop gate proves pure ballistics clears NO level in par.
+- **6 dense hand-crafted levels**, each with its own identity (disc
+  colour + nebula tint + distinct palette/layout): First Burn, Slingshot
+  Turn, Twin Gates, Event Horizon (black hole), Carousel (moving planet),
+  Grand Tour (black hole + portal pair + shielded target). 2–4 targets
+  per level, pars 1–2, all 3-starred by the thrust solver in par.
+- **Oracle killed.** No verdict text anywhere, ever. The preview is a
+  short first-second stub; the predicted-end ring mesh is deleted.
+  Audit fixes folded in: no tap-to-launch (the guard now measures the
+  pointer's own displacement, not the pad-to-release distance — the
+  settling camera could inflate that by ~13px and turn a tap into a
+  phantom drag), aim/power decoupled (drag sets angle, slider + arrow
+  keys set power, 0.1° steps, Shift for fine), Skip/fast-forward
+  mid-flight, shots counted at launch, no false "flew out" toast after a
+  collect, achievements panel capped with its own scroll.
+- **Real 3D:** the camera follows the comet with depth, frames the whole
+  field while aiming, and slow-orbits the attract scene behind the menu
+  (demo comet on a wide 8.5×6.8 orbit, live trail, nebula, planets).
+  The menu is a translucent two-column panel over the live scene —
+  actions left, setup + campaign map right — so it fits 720px with every
+  level button visible. Title/buttons pop in with staggered overshoot;
+  every button has a hover tick SFX + scale pop and press feedback.
+  Screen-stack flow, one focused control per screen, safe-area insets,
+  no version/engine text on any player-facing screen (version lives in
+  the README only). Daily/Endless/Time Attack/Zen buttons are gone until
+  their blocks rebuild them for thrust — no dead buttons.
+- **Modes dormant, code kept:** daily/seed/endless/zen/time-attack
+  physics and the generator still work and are still bot-verified, but
+  nothing on screen offers them. `?seed=` links still work. Achievements
+  trimmed 14 → 11 (daily-grind, deep-space, zen-master gone with their
+  modes); save schema v2 → v3.
+- **Bugs found by the new tests (fixed in-block):** `state.testThrust`
+  leaked across shots (the L1 steering override kept burning through the
+  L4 graze flight) — launch/beginLevel now clear it; the render check's
+  L4 graze flew on level 2 because level 4 was still locked — new
+  `__orbit.unlockAll()` test hook; the screenshots run steered only after
+  the mid-flight capture, letting the comet fly ballistically off the
+  planned arc — it now steers from frame one.
+- Tests: smoke 463/463 PASS (thrust + fuel + anti-slop gate on all 6
+  levels), bot 6/6 campaign levels in par with thrust (3 stars) +
+  anti-slop gate holds + 4 generated levels within budget, render check
+  PASS (menu over live 3D, tap never launches, real drag aims, power
+  slider, thrust completes L1 in 1 shot with 3 stars, L4 graze line
+  collects + slingshot + slow-mo + +100 assist, L5 planet moves, pause
+  focus, 6-level stats, 11 achievements, save v3, zero console errors),
+  screenshots PASS (README captures + 3-resolution size sweep
+  1280x720 / 2560x1080 / 1080x2340, inspected by eye — no clipped
+  content, live 3D scene visible behind the menu).
+
+## Rebuild Block 2 — 2026-11-20 12:22 Asia/Bangkok (v2.1.0)
+
+- **Ship upgrades (#1-2):** Ion Thrusters (+25% thrust power, unlocks at
+  15 campaign stars) and Big Tank (+30% fuel capacity, unlocks at 30
+  stars), toggled in Level Select and persisted in the save (schema
+  v3 → v4, old saves migrate with both upgrades off). An upgrade only
+  flies when equipped AND unlocked — a stale flag can never equip above
+  its unlock. The loadout threads through launchState, the preview stub
+  (so the preview never lies about an upgraded ship), the thrust solver
+  and the HUD (equipped chips + fuel bar reads the real tank). The
+  6-level campaign caps at 18 stars, so Big Tank cannot unlock live
+  until levels 7-12 land in Block 6 — its mechanics are verified in Node
+  (130-fuel launches, save round-trip) and its button shows the 30-star
+  requirement until then.
+- **Boost pads (#3):** one teal pad per campaign level, on a risk/reward
+  line (heavyweight near-miss, black-hole descent, moving-planet orbit
+  centre, tour diagonal). Flying through one refills +50 fuel (up to
+  the tank) and kicks speed +6 along the flight direction, once per pad
+  per shot — it re-arms on the next launch. Teal disc + breathing ring,
+  distinct from lime bounce pads and gold orbs; small-tier feedback
+  (teal zap SFX + burst + shockwave), pad mesh hides for the shot.
+- **Solver beam search:** a pad can make a greedy opening shot look best
+  while stranding the level (three stars collected, the shielded star
+  left for one shot that can only crack it). `solveLevelThrust` now tries
+  the top 3 distinct opening lines in order — the solver plays like a
+  player who learns from a trap line. Level 6's winning plan is again
+  the 198° + 66° tour.
+- Tests: smoke 484/484 PASS (21 new Block 2 checks: upgrade table,
+  gating, tank/thrust flight deltas, pad refill/kick/once-per-shot,
+  placement, save migration, beam distinctness), bot 6/6 in par with
+  thrust (3 stars) + anti-slop gate holds + 4 generated levels, render
+  check PASS (upgrades locked at 0 stars, Ion Thrusters unlocks at 15
+  and equips on click, Big Tank stays locked, equipped loadout flies
+  live at 18.75 accel, one boost pad per level, L1 still completes in
+  one shot with the upgraded ship, zero console errors).
+- **Collision note:** Block 1 finished late (~12:40) and this block's
+  edits landed on the same tree before Block 1's bookkeeping finished;
+  the interval cron is paused to stop further collisions. The first
+  live v2 push is this mixed tree as v2.1.0, verified as a whole
+  (smoke + bot + render check + size sweep) before uploading.
