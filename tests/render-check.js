@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.12.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.13.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -239,11 +239,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.12.0') throw new Error(`expected version 0.12.0, got ${version}`);
+  if (version !== '0.13.0') throw new Error(`expected version 0.13.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.12.0')) throw new Error('menu version v0.12.0 missing');
+  if (!menuText.includes('v0.13.0')) throw new Error('menu version v0.13.0 missing');
   if (!menuText.includes('/ 36')) throw new Error('menu total stars should be / 36 (12 levels)');
-  console.log('render-check: menu renders with v0.12.0');
+  console.log('render-check: menu renders with v0.13.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
