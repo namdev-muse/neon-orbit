@@ -1,6 +1,9 @@
-// Neon Orbit — pure physics + level logic.
+// Neon Orbit v2 — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.17.0';
+// v2 rebuild: mid-flight thrust is the core mechanic (steer the comet with
+// limited fuel), the prediction oracle is dead, and every level is dense
+// and hand-crafted so a ballistic (no-thrust) solver cannot clear it in par.
+export const VERSION = '2.1.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -8,6 +11,60 @@ export const COMET_RADIUS = 0.5;
 export const SUBSTEP = 1 / 120; // fixed integration step (s)
 export const MAX_SIM_TIME = 10; // a shot that is still flying is lost
 export const GRAVITY_SOFTEN = 1.0; // softening scale, multiplied by planet radius
+
+// ---------------------------------------------------------------- thrust (v2 core)
+// Mid-flight thrust: hold to burn, steer the comet while it flies. Fuel is
+// a per-shot tank — every launch starts full, burning drains it, and gold
+// fuel orbs refill it mid-flight. Thrust accel is strong enough to bend a
+// flight around a planet or climb out of a bad arc, but the tank only
+// holds ~3 seconds of burn, so every burn is a decision.
+export const FUEL_MAX = 100;
+export const FUEL_BURN_RATE = 32; // fuel per second of full burn
+export const THRUST_ACCEL = 15; // thrust acceleration (units / s^2)
+export const FUEL_ORB_REFILL = 40; // fuel a gold orb restores mid-flight
+
+// ---------------------------------------------------------------- ship upgrades (Block 2, #1-2)
+// Two ship upgrades, earned with campaign stars and toggled in Level
+// Select — they make the ship fly better, never the levels easier to
+// aim: thrust power (+25% burn force) and fuel capacity (+30% tank).
+// An upgrade only flies when it is BOTH equipped AND unlocked at the
+// save's total stars, so a stale or hand-edited flag can never equip
+// above its unlock. Loadouts are plain { thrust, tank } booleans so
+// tests, the solver and the preview all drive the same ship.
+export const THRUST_UPGRADE_MULT = 1.25; // Ion Thrusters: +25% burn force
+export const TANK_UPGRADE_MULT = 1.30; // Big Tank: +30% fuel capacity
+export const UPGRADES = [
+  { id: 'thrust', name: 'Ion Thrusters', desc: '+25% thrust power', unlockStars: 15, thrustMult: THRUST_UPGRADE_MULT, tankMult: 1 },
+  { id: 'tank', name: 'Big Tank', desc: '+30% fuel capacity', unlockStars: 30, thrustMult: 1, tankMult: TANK_UPGRADE_MULT },
+];
+export function upgradeById(id) {
+  return UPGRADES.find((u) => u.id === id) || null;
+}
+export function upgradeUnlocked(id, total) {
+  const u = upgradeById(id);
+  if (!u) return false;
+  return typeof total === 'number' && Number.isFinite(total) && total >= u.unlockStars;
+}
+// Multipliers for a loadout. Unknown keys and non-booleans are ignored;
+// a missing loadout is the base ship (1, 1).
+export function loadoutMultipliers(loadout) {
+  const l = loadout && typeof loadout === 'object' ? loadout : {};
+  return {
+    thrust: l.thrust === true ? THRUST_UPGRADE_MULT : 1,
+    tank: l.tank === true ? TANK_UPGRADE_MULT : 1,
+  };
+}
+// The loadout a save actually flies with: equipped AND unlocked at its
+// total stars. totalStars is defined below (function declaration, so it
+// is hoisted and callable here).
+export function activeLoadout(save) {
+  const total = save ? totalStars(save) : 0;
+  const up = save && save.upgrades && typeof save.upgrades === 'object' ? save.upgrades : {};
+  return {
+    thrust: up.thrust === true && upgradeUnlocked('thrust', total),
+    tank: up.tank === true && upgradeUnlocked('tank', total),
+  };
+}
 
 // ---------------------------------------------------------------- game feel
 // Feedback tiers from the game-feel skill: small events get 0.10-0.20
@@ -28,6 +85,13 @@ export const FEEDBACK = {
   portal: { tier: 'small', trauma: 0.15, hitStop: 0 },
   bounce: { tier: 'small', trauma: 0.15, hitStop: 0 },
   shieldhit: { tier: 'small', trauma: 0.18, hitStop: 0 },
+  // Trail pickup orb: a soft gold ping — small tier, no hit-stop.
+  orb: { tier: 'small', trauma: 0.10, hitStop: 0 },
+  // Thrust burn start (v2): a small kick — small tier, no hit-stop.
+  thrust: { tier: 'small', trauma: 0.12, hitStop: 0 },
+  // Boost pad (Block 2, #3): a teal kick through a pad — small tier, no
+  // hit-stop, the same weight as an orb pickup.
+  boost: { tier: 'small', trauma: 0.15, hitStop: 0 },
   win: { tier: 'medium', trauma: 0.30, hitStop: 0.05 },
   swallowed: { tier: 'medium', trauma: 0.50, hitStop: 0.06 },
   crash: { tier: 'large', trauma: 0.85, hitStop: 0.12 },
@@ -96,121 +160,190 @@ export function gravityAssistPoints(slingshots) {
   return Math.max(0, Math.floor(slingshots)) * GRAVITY_ASSIST_POINTS;
 }
 
+// Fuel orbs (v2): small gold orbs placed along flight paths. Flying
+// through one banks ORB_POINTS into the attempt bonus (+50 each by
+// default) AND refills FUEL_ORB_REFILL fuel mid-flight, so a good route
+// through orbs extends the burn. Orbs stay collected for the whole
+// attempt, so a later shot cannot farm the same orb twice. `points`
+// overrides the default (clamped 10..500); `r` overrides the trigger
+// radius.
+export const ORB_POINTS = 50;
+export const ORB_RADIUS = 0.9;
+export function orbPoints(orb) {
+  if (!orb || typeof orb.points !== 'number' || !Number.isFinite(orb.points)) return ORB_POINTS;
+  return Math.max(10, Math.min(500, Math.floor(orb.points)));
+}
+export function orbRadius(orb) {
+  if (!orb || typeof orb.r !== 'number' || !Number.isFinite(orb.r) || orb.r <= 0) return ORB_RADIUS;
+  return orb.r;
+}
+export function levelOrbs(level) {
+  return level.orbs || [];
+}
+
+// Boost pads (Block 2, #3): teal rings on risk/reward lines. Flying
+// through one refills BOOST_PAD_REFILL fuel (up to the tank — the
+// upgraded tank included) AND kicks the comet faster along its current
+// flight direction, so a pad is a route choice, not a pickup: the fast
+// line runs close to a planet, a black hole or a moving planet. One
+// trigger per pad per shot — a comet cannot sit on a pad and farm it.
+// `r` overrides the trigger radius like orbs do.
+export const BOOST_PAD_REFILL = 50;
+export const BOOST_PAD_KICK = 6; // speed added along the flight direction
+export const BOOST_PAD_RADIUS = 1.4;
+export function levelBoostPads(level) {
+  return level.boostPads || [];
+}
+export function boostPadRadius(pad) {
+  if (!pad || typeof pad.r !== 'number' || !Number.isFinite(pad.r) || pad.r <= 0) return BOOST_PAD_RADIUS;
+  return pad.r;
+}
+
+// Thrust burn helper (v2): how much fuel a burn of `seconds` costs, and
+// whether a flight state can still burn. Pure helpers so Node tests can
+// drive the fuel economy without stepping a flight.
+export function fuelCost(seconds) {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return 0;
+  return seconds * FUEL_BURN_RATE;
+}
+export function canThrust(state) {
+  return !!state && !state.done && typeof state.fuel === 'number'
+    && Number.isFinite(state.fuel) && state.fuel > 0;
+}
+
 // ---------------------------------------------------------------- levels
 // One palette, one art direction: violet planets, magenta targets, cyan comet.
+// v2 campaign: 6 dense hand-crafted levels. Every level has its own identity
+// (theme: disc colour + nebula tint + a distinct planet palette) and is
+// designed so a ballistic (no-thrust) solver CANNOT finish it in par —
+// thrust must chain targets in a single shot (par is one less than the
+// target count on most levels). The smoke tests assert both halves of
+// that gate, so a level that the bot clears ballistically is not done.
+// `theme.disc` tints the playfield disc; `theme.tint` tints the nebula.
 export const LEVELS = [
   {
-    id: 1, name: 'First Light', par: 2,
-    hint: 'Drag back from the comet and release to launch. Bend gently around the planet.',
+    id: 1, name: 'First Burn', par: 1,
+    hint: 'Launch toward the upper star, then HOLD to burn — steer the comet down to the second star in the same shot. One shot, two stars.',
+    theme: { disc: '#0d0826', tint: '#ffffff' },
     pad: { x: -14, y: 0 },
-    planets: [{ x: 0, y: 6, r: 2, mu: 80, color: 0x7c3aed }],
-    targets: [{ x: 12, y: 0, r: 1.6 }],
+    planets: [
+      { x: 0, y: 4, r: 2, mu: 130, color: 0x7c3aed },
+      { x: -1, y: -6, r: 1.8, mu: 110, color: 0x4f46e5 },
+    ],
+    targets: [{ x: 11, y: 6, r: 1.7 }, { x: 13, y: -6, r: 1.7 }],
+    orbs: [{ x: -5, y: -2 }, { x: 6, y: 0 }],
+    // Boost pad (Block 2, #3): below the two-target line, in the lower
+    // planet's gravity well — the fast route to the second star dives
+    // past it, and the pad's kick carries the comet on to the star.
+    boostPads: [{ x: 4, y: -3 }],
   },
   {
-    id: 2, name: 'Curveball', par: 2,
-    hint: 'The planet sits on the straight line. Aim wide and let gravity bend the shot home.',
-    pad: { x: -14, y: -6 },
-    planets: [{ x: 0, y: 0, r: 2.5, mu: 170, color: 0x8b5cf6 }],
-    targets: [{ x: 12, y: 6, r: 1.6 }],
-  },
-  {
-    id: 3, name: 'Twin Suns', par: 3,
-    hint: 'Two planets, two targets. One good slingshot can catch both.',
+    id: 2, name: 'Slingshot Turn', par: 2,
+    hint: 'A heavyweight blocks the straight line. Bend around it, then burn to swing between the three stars.',
+    theme: { disc: '#160a04', tint: '#ffd9b0' },
     pad: { x: -15, y: 0 },
     planets: [
-      { x: -2, y: 4, r: 2, mu: 130, color: 0x7c3aed },
-      { x: 4, y: -4, r: 2, mu: 130, color: 0x6d28d9 },
+      { x: 0, y: 0, r: 2.5, mu: 220, color: 0xea580c },
+      { x: 8, y: 7, r: 1.8, mu: 120, color: 0xf97316 },
     ],
-    targets: [{ x: 10, y: 5, r: 1.6 }, { x: 12, y: -6, r: 1.6 }],
+    targets: [{ x: 14, y: 9, r: 1.6 }, { x: 14, y: -8, r: 1.6 }, { x: -9, y: -10, r: 1.6 }],
+    orbs: [{ x: -7, y: 4 }, { x: 4, y: -3 }],
+    // Boost pad (Block 2, #3): 4 units off the heavyweight's surface —
+    // a near-miss corridor. Thread it and the kick bends you between
+    // the three stars; miss the line and the planet eats the shot.
+    boostPads: [{ x: 4, y: 0 }],
   },
   {
-    id: 4, name: 'The Long Way', par: 2,
-    hint: 'The target hides behind the planet. Slingshot around it — never through it.',
-    pad: { x: -14, y: 0 },
-    planets: [{ x: 2, y: 0, r: 2.5, mu: 200, color: 0x8b5cf6 }],
-    targets: [{ x: 13, y: 0, r: 1.6 }],
-  },
-  {
-    id: 5, name: 'Heavyweight', par: 3,
-    hint: 'A massive planet dominates the field. Use its pull, respect its surface.',
-    pad: { x: -15, y: -8 },
-    planets: [{ x: 0, y: 0, r: 3.5, mu: 320, color: 0x5b21b6 }],
-    targets: [{ x: 12, y: 8, r: 1.6 }, { x: 13, y: -7, r: 1.6 }],
-  },
-  {
-    id: 6, name: 'Gauntlet', par: 3,
-    hint: 'Three planets, three small targets, a tight shot budget. Chain the bends.',
-    pad: { x: -16, y: 0 },
+    id: 3, name: 'Twin Gates', par: 2,
+    hint: 'Three ice giants, three stars. Chain the bends — burn between gates to catch two stars on one flight.',
+    theme: { disc: '#04121a', tint: '#bfe9ff' },
+    pad: { x: -15, y: -6 },
     planets: [
-      { x: -4, y: 5, r: 2, mu: 140, color: 0x7c3aed },
-      { x: 4, y: -5, r: 2, mu: 140, color: 0x6d28d9 },
-      { x: 10, y: 4, r: 2, mu: 140, color: 0x8b5cf6 },
+      { x: -3, y: 5, r: 2, mu: 150, color: 0x38bdf8 },
+      { x: 5, y: -4, r: 2, mu: 150, color: 0x0ea5e9 },
+      { x: 10, y: 6, r: 1.8, mu: 120, color: 0x14b8a6 },
     ],
-    // Block 10 difficulty tuning: the old targets sat on one slow lob
-    // (63deg, power 0.25 collected all three). The targets are now
-    // smaller (r 1.4) and spread further apart, so the lob collects one
-    // at most and the solver needs 2 shots.
-    targets: [{ x: 16, y: 9, r: 1.4 }, { x: 17, y: -9, r: 1.4 }, { x: 8, y: 12, r: 1.4 }],
+    targets: [{ x: 14, y: 8, r: 1.6 }, { x: 14, y: -9, r: 1.6 }, { x: -8, y: 11, r: 1.6 }],
+    orbs: [{ x: -8, y: 0 }, { x: 7, y: 2 }],
+    // Boost pad (Block 2, #3): dead centre between the three ice
+    // giants — the gate-to-gate line runs straight through it, so a
+    // chained flight refuels and accelerates mid-tour.
+    boostPads: [{ x: 1, y: 0 }],
   },
   {
-    id: 7, name: 'Event Horizon', par: 2,
-    hint: 'A black hole guards the target — it pulls hard and swallows comets. Arc over the top and let the planet bend you home.',
+    id: 4, name: 'Event Horizon', par: 2,
+    hint: 'A black hole guards the middle star. Arc over it and burn hard to escape its pull — never fly through it.',
+    theme: { disc: '#140419', tint: '#ffc2ec' },
     pad: { x: -14, y: 0 },
-    planets: [{ x: -2, y: 8, r: 2, mu: 140, color: 0x7c3aed }],
-    blackHoles: [{ x: 2, y: 0, r: 1.6, mu: 300 }],
-    targets: [{ x: 13, y: 0, r: 1.6 }],
+    planets: [
+      { x: -3, y: 8, r: 2, mu: 140, color: 0xc026d3 },
+      // Second planet sits on the right-side descent of the big top lob,
+      // so no single ballistic arc can sweep the top star down to the
+      // lower two — the arc crashes into it instead.
+      { x: 14, y: 5, r: 2.2, mu: 180, color: 0x9333ea },
+      // Third planet guards the right-side rise of the slow bottom
+      // U-lob: the sweep that collects the left-low star and climbs to
+      // the top star crashes into it instead.
+      { x: 16, y: 2, r: 2, mu: 150, color: 0x7e22ce },
+    ],
+    blackHoles: [{ x: 3, y: 0, r: 1.6, mu: 320 }],
+    targets: [{ x: 11, y: -1, r: 1.6 }, { x: 15, y: 11, r: 1.6 }, { x: -10, y: -10, r: 1.6 }],
+    orbs: [{ x: -7, y: -5 }, { x: 0, y: -8 }],
+    // Boost pad (Block 2, #3): on the descent to the middle star, in
+    // the black hole's pull — the pad refuels the escape burn, but the
+    // line that reaches it skims the event horizon.
+    boostPads: [{ x: 7, y: -4 }],
   },
   {
-    id: 8, name: 'Carousel', par: 3,
-    hint: 'The planet never sits still — it orbits the centre. Time your launch for when the bend lines up.',
+    id: 5, name: 'Carousel', par: 2,
+    hint: 'The big planet never sits still — it orbits the centre. Time your launch, then burn to chase the stars as the bend moves.',
+    theme: { disc: '#04160c', tint: '#c8ffd9' },
     pad: { x: -15, y: 0 },
     planets: [
       {
-        x: 7, y: 0, r: 2, mu: 150, color: 0x8b5cf6,
+        x: 7, y: 0, r: 2, mu: 150, color: 0xd97706,
         orbit: { cx: 0, cy: 0, radius: 7, speed: 0.45, phase: 0 },
       },
+      { x: -4, y: -7, r: 1.8, mu: 110, color: 0x16a34a },
     ],
-    targets: [{ x: 12, y: 7, r: 1.6 }, { x: 13, y: -7, r: 1.6 }],
+    targets: [{ x: 13, y: 3, r: 1.6 }, { x: 13, y: -8, r: 1.6 }, { x: -11, y: 9, r: 1.6 }],
+    orbs: [{ x: -10, y: 5 }, { x: 11, y: -4 }],
+    // Boost pad (Block 2, #3): the exact centre of the moving planet's
+    // orbit — the planet sweeps through it, so the pad is only safe to
+    // take when the bend is on the far side. Timing is the price.
+    boostPads: [{ x: 0, y: 0 }],
   },
   {
-    id: 9, name: 'Portal Hop', par: 3,
-    hint: 'Portals come in pairs — fly into one and you exit the other with the same speed. Use the shortcut to slip past the planet.',
-    pad: { x: -15, y: 0 },
-    planets: [{ x: 0, y: 0, r: 2.5, mu: 200, color: 0x8b5cf6 }],
-    portals: [
-      { x: -8, y: -7, r: 1.6, pair: 0 },
-      { x: 7, y: 7, r: 1.6, pair: 0 },
-    ],
-    targets: [{ x: 13, y: -1, r: 1.6 }, { x: 11, y: 9, r: 1.6 }],
-  },
-  {
-    id: 10, name: 'Shielded Stars', par: 4,
-    hint: 'Shielded targets take two hits — the first cracks the shield, the second collects the star. Budget your shots.',
-    pad: { x: -15, y: 0 },
+    id: 6, name: 'Grand Tour', par: 2,
+    hint: 'Everything at once: three planets, a black hole, a portal pair — and one shielded star that takes two hits. Fly the whole tour.',
+    theme: { disc: '#180512', tint: '#ffc9c9' },
+    pad: { x: -16, y: 0 },
     planets: [
-      { x: -2, y: 5, r: 2, mu: 130, color: 0x7c3aed },
-      { x: 3, y: -5, r: 2, mu: 130, color: 0x6d28d9 },
+      { x: -4, y: 6, r: 2, mu: 140, color: 0xdc2626 },
+      { x: 4, y: -6, r: 2, mu: 140, color: 0x7c3aed },
+      { x: 10, y: 7, r: 1.8, mu: 130, color: 0xdb2777 },
+      // Fourth planet sits on the descent from the top star to the
+      // right-mid star, so no single ballistic arc can sweep both.
+      { x: 14, y: 10, r: 1.8, mu: 140, color: 0x0ea5e9 },
     ],
-    targets: [{ x: 12, y: 6, r: 1.6, hits: 2 }, { x: 13, y: -6, r: 1.6, hits: 2 }],
-  },
-  {
-    id: 11, name: 'Bounce House', par: 3,
-    hint: 'Bounce pads reflect the comet like a mirror — hit one at an angle and it throws you around the planet.',
-    pad: { x: -15, y: -6 },
-    planets: [{ x: 0, y: 0, r: 3, mu: 280, color: 0x5b21b6 }],
-    bouncePads: [{ x: 4, y: 8, r: 2.2 }],
-    targets: [{ x: 13, y: -7, r: 1.6 }, { x: 12, y: 7, r: 1.6 }],
-  },
-  {
-    id: 12, name: 'Moving Stars', par: 2,
-    hint: 'The targets drift on small orbits — the faint rings show their paths. Lead your shot so the comet meets the target, not where it was.',
-    pad: { x: -15, y: 0 },
-    planets: [{ x: 0, y: 0, r: 2.5, mu: 200, color: 0x8b5cf6 }],
+    blackHoles: [{ x: 0, y: -1, r: 1.3, mu: 220 }],
+    portals: [
+      { x: -9, y: -8, r: 1.6, pair: 0 },
+      { x: 18, y: 11, r: 1.6, pair: 0 },
+    ],
     targets: [
-      // (x, y) is the position at t = 0: cx + radius * cos(phase).
-      { x: 12.5, y: 6, r: 1.6, orbit: { cx: 10, cy: 6, radius: 2.5, speed: 0.35, phase: 0 } },
-      { x: 10, y: -6, r: 1.6, orbit: { cx: 12, cy: -6, radius: 2, speed: -0.45, phase: Math.PI } },
+      { x: 15, y: -3, r: 1.6 }, { x: 17, y: 4, r: 1.6 },
+      { x: 9, y: 12, r: 1.6 }, { x: -13, y: 8, r: 1.6, hits: 2 },
     ],
+    orbs: [{ x: -11, y: 5 }, { x: 2, y: 9 }, { x: 9, y: -2 }],
+    // Boost pad (Block 2, #3): between the two mid-field planets on the
+    // tour's long diagonal — the line from the portal exit to the
+    // right-mid star runs through it, with the black hole below. It is
+    // a trap line too: one shot can collect three stars off it and
+    // strand the shielded star — the thrust solver now tries the next
+    // best opening shot when the greedy one dead-ends (beam search),
+    // the way a player learns from a bad line instead of giving up.
+    boostPads: [{ x: 6, y: 2 }],
   },
 ];
 
@@ -383,6 +516,154 @@ export function solveLevel(level, budget, opts = {}) {
   return { shots, lines };
 }
 
+// ---------------------------------------------------------------- thrust solver (v2)
+// The thrust-aware solver: the same grid search as solveShot, but every
+// candidate launch is flown WITH a steering policy, so it finds shots
+// that chain targets by burning mid-flight. This is the bot harness's
+// real solver — and the anti-slop gate's other half: solveLevel (pure
+// ballistic) must FAIL a v2 level within par while solveLevelThrust
+// SUCCEEDS within par, proving the level needs flying, not just aiming.
+//
+// The policy is a greedy pursuit: steer toward the nearest uncollected
+// target at a cruise speed, burning only when the velocity error is big
+// enough to matter. It does not know the level layout — it just flies —
+// so a level it clears is clearable by a skilled player, not by a lookup.
+// `collected` is the LIVE list for the flight (it grows as targets are
+// collected mid-shot), so the policy re-targets after every collect and
+// chains targets instead of hovering on one it already caught.
+export const THRUST_CRUISE_SPEED = 9;
+export function thrustPolicyFor(level, collected) {
+  return (state, _level, liveCollected) => {
+    const done = Array.isArray(liveCollected) ? liveCollected : collected;
+    const remaining = level.targets
+      .map((t, i) => i)
+      .filter((i) => !done.includes(i));
+    if (!remaining.length || !canThrust(state)) return null;
+    // Nearest remaining target, at its current position (moving targets
+    // are led by their live position, not where they started).
+    const t = (state.t0 || 0) + state.t;
+    let bestI = remaining[0];
+    let bestD = Infinity;
+    for (const i of remaining) {
+      const pos = targetPosAt(level.targets[i], t);
+      const d = (pos.x - state.x) ** 2 + (pos.y - state.y) ** 2;
+      if (d < bestD) { bestD = d; bestI = i; }
+    }
+    const pos = targetPosAt(level.targets[bestI], t);
+    const dx = pos.x - state.x, dy = pos.y - state.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    // Desired velocity: cruise toward the target. Steer only when the
+    // error is worth fuel — a comet already on line coasts for free.
+    const dvx = (dx / dist) * THRUST_CRUISE_SPEED - state.vx;
+    const dvy = (dy / dist) * THRUST_CRUISE_SPEED - state.vy;
+    const err = Math.hypot(dvx, dvy);
+    if (err < 1.0) return null;
+    return { x: dvx / err, y: dvy / err };
+  };
+}
+
+export function solveShotThrust(level, collected = [], opts = {}) {
+  const tops = solveShotThrustTop(level, collected, opts, 1);
+  return tops.length ? tops[0] : null;
+}
+
+// Top-N thrust shots (Block 2, #3): the same grid search as
+// solveShotThrust, but it keeps the best N DISTINCT lines — distinct
+// means a different launch, not the same arc ±2° (angle > 6° apart, or
+// power > 0.1 apart, or a different launch time). A boost pad can make
+// a greedy opening shot look best while stranding the level (three
+// stars collected, the shielded star left for a single shot that can
+// only crack it) — solveLevelThrust tries the next-best openings when
+// the best one dead-ends, so the solver plays like a player who learns
+// from a trap line instead of a bot that only ever tries one idea.
+export function solveShotThrustTop(level, collected = [], opts = {}, n = 3) {
+  const angleStep = 6;
+  const powerStep = 0.1;
+  const t0s = opts.t0s || (levelHasMovingPlanets(level) || levelHasMovingTargets(level)
+    ? [0, 0.75, 1.5, 2.25, 3] : [0]);
+  const tops = [];
+  const score = (res) => {
+    let s = res.collected.length * 10000;
+    s += (res.shieldCracks || 0) * 4000;
+    if (res.outcome === 'crash') s -= 5000;
+    if (res.outcome === 'swallowed') s -= 5000;
+    if (res.outcome === 'timeout') s -= 2000;
+    if (res.outcome === 'lost') s -= 500;
+    // Fuel is a cost: two plans that collect the same stars should
+    // prefer the one that burned less, so the bot's plan stays human.
+    s -= (res.fuelUsed || 0) * 2;
+    s -= res.steps * 0.05;
+    return s;
+  };
+  const angleDiff = (a, b) => {
+    const d = Math.abs(a - b) % (Math.PI * 2);
+    return Math.min(d, Math.PI * 2 - d);
+  };
+  const consider = (angle, power, t0, res) => {
+    const sc = score(res);
+    const cand = { angle, power, t0, score: sc, res };
+    for (const kept of tops) {
+      if (angleDiff(angle, kept.angle) <= (6 * Math.PI) / 180
+        && Math.abs(power - kept.power) <= 0.1
+        && Math.abs(t0 - kept.t0) <= 0.75) return; // near-duplicate of a better line
+    }
+    tops.push(cand);
+    tops.sort((a, b) => b.score - a.score);
+    if (tops.length > n) tops.length = n;
+  };
+  for (const t0 of t0s) {
+    for (let deg = 0; deg < 360; deg += angleStep) {
+      for (let p = 0.15; p <= 1.001; p += powerStep) {
+        const policy = thrustPolicyFor(level, collected);
+        const res = simulateLaunch(level, (deg * Math.PI) / 180, p, collected, {
+          record: false, t0, shieldHits: opts.shieldHits || {}, thrustPolicy: policy,
+          loadout: opts.loadout,
+        });
+        consider((deg * Math.PI) / 180, p, t0, res);
+      }
+    }
+  }
+  return tops;
+}
+
+// Plays a level shot by shot with the thrust solver. Returns { shots,
+// lines } on completion within `budget`, or null when even thrust cannot
+// finish it. Lines carry the launch per shot; the policy itself is
+// re-derived per shot from the remaining targets.
+// Beam (Block 2, #3): the opening shot is tried from the top 3 distinct
+// lines in order — a greedy opener that strands the level (the boost-pad
+// trap: three stars, shield uncracked) falls through to the next-best
+// opening instead of failing the level. Later shots stay greedy: only
+// the opener branches, so the search stays cheap.
+export function solveLevelThrust(level, budget, opts = {}) {
+  const openers = solveShotThrustTop(level, [], opts, 3);
+  for (const opener of openers) {
+    const collected = [];
+    let shieldHits = opts.shieldHits ? { ...opts.shieldHits } : {};
+    let orbsCollected = [];
+    const lines = [];
+    let shots = 0;
+    let first = opener;
+    while (collected.length < level.targets.length && shots < budget) {
+      const best = first || solveShotThrust(level, collected, { ...opts, shieldHits });
+      first = null;
+      if (!best) break;
+      shots++;
+      lines.push({
+        angle: best.angle, power: best.power, t0: best.t0,
+        collected: best.res.collected.length, fuelUsed: best.res.fuelUsed,
+      });
+      shieldHits = best.res.shieldHits || shieldHits;
+      orbsCollected = best.res.orbsCollected || orbsCollected;
+      for (const i of best.res.collected) {
+        if (!collected.includes(i)) collected.push(i);
+      }
+    }
+    if (collected.length === level.targets.length) return { shots, lines };
+  }
+  return null;
+}
+
 const GENERATED_NAMES = [
   'Stardust Drift', 'Nebula Pass', 'Gravity Well', 'Comet Run',
   'Slingshot Alley', 'Void Crossing', 'Starlight Bend', 'Orbit Dance',
@@ -457,7 +738,32 @@ function genCandidate(rand, difficulty) {
       p.orbit = { cx: 0, cy: 0, radius, speed: 0.3 + rand() * 0.35, phase: Math.atan2(p.y, p.x) };
     }
   }
-  return { pad, planets, targets, blackHoles };
+  // Trail orb (#12): one gold pickup near the pad -> target corridor, on
+  // a perpendicular offset so it rewards a bend rather than a straight
+  // line. Only placed when it clears every planet, target, black hole
+  // and the pad — orbs are a bonus, never a blocker.
+  const orbs = [];
+  const orbClear = (x, y) => {
+    if (x * x + y * y > (PLAYFIELD_RADIUS - 2) * (PLAYFIELD_RADIUS - 2)) return false;
+    if (Math.hypot(x - pad.x, y - pad.y) < 3) return false;
+    if (targets.some((t) => Math.hypot(x - t.x, y - t.y) < t.r + ORB_RADIUS + 0.5)) return false;
+    if (planets.some((p) => Math.hypot(x - p.x, y - p.y) < p.r + ORB_RADIUS + 0.5)) return false;
+    if (blackHoles.some((b) => Math.hypot(x - b.x, y - b.y) < b.r + ORB_RADIUS + 0.5)) return false;
+    // A moving planet sweeps its whole orbit circle (centred on the
+    // origin), so the orb must stay clear of that path, not just of the
+    // planet's current spot.
+    if (planets.some((p) => p.orbit
+      && Math.abs(Math.hypot(x, y) - p.orbit.radius) < p.r + ORB_RADIUS + 0.5)) return false;
+    return true;
+  };
+  for (let tries = 0; tries < 12 && orbs.length === 0; tries++) {
+    const t = 0.35 + rand() * 0.35;
+    const off = (rand() < 0.5 ? -1 : 1) * (2.5 + rand() * 3);
+    const x = pad.x + dx * t + px * off;
+    const y = pad.y + dy * t + py * off;
+    if (orbClear(x, y)) orbs.push({ x: Math.round(x * 10) / 10, y: Math.round(y * 10) / 10 });
+  }
+  return { pad, planets, targets, blackHoles, orbs };
 }
 
 // Builds a deterministic generated level for a seed + difficulty, verified
@@ -493,6 +799,7 @@ export function generateLevel(seed, difficulty, id) {
     pad: { x: -14, y: 0 },
     planets: [{ x: 0, y: 6, r: 2, mu: 80, color: 0x7c3aed }],
     targets: [{ x: 12, y: 0, r: 1.6 }],
+    orbs: [{ x: 0, y: -3 }],
   };
 }
 
@@ -523,6 +830,9 @@ export function zenLevel() {
     ],
     blackHoles: [{ x: 11, y: 4, r: 1.4, mu: 240 }],
     targets: [{ x: 13, y: 0, r: 1.6 }, { x: 10, y: 9, r: 1.6 }, { x: 13, y: -8, r: 1.6 }],
+    // Zen orbs (#12): outside the moving planet's orbit path (radius 7),
+    // so the planet never sweeps over them.
+    orbs: [{ x: -11, y: -6 }, { x: 5, y: 11 }],
   };
 }
 
@@ -617,7 +927,7 @@ export function targetHits(target) {
   return Number.isInteger(target.hits) && target.hits >= 1 ? target.hits : 1;
 }
 
-export function launchState(level, angle, power, t0 = 0, shieldHits = {}) {
+export function launchState(level, angle, power, t0 = 0, shieldHits = {}, orbsCollected = [], loadout) {
   // A non-finite angle or power (bad input, a corrupted save) must never
   // seed NaN into the flight: NaN falls back to a still comet, while an
   // out-of-range power (±Infinity) clamps to the 0..1 range.
@@ -625,6 +935,11 @@ export function launchState(level, angle, power, t0 = 0, shieldHits = {}) {
   const p = (typeof power === 'number' && !Number.isNaN(power))
     ? Math.max(0, Math.min(1, power)) : 0;
   const speed = p * MAX_SPEED;
+  // Ship upgrades (Block 2, #1-2): the loadout scales this shot's tank
+  // and burn force. The multipliers live on the flight state so the
+  // step, the orb refill cap and the HUD all read the same numbers.
+  const mult = loadoutMultipliers(loadout);
+  const fuelMax = FUEL_MAX * mult.tank;
   return {
     x: level.pad.x, y: level.pad.y,
     vx: Math.cos(a) * speed, vy: Math.sin(a) * speed,
@@ -637,6 +952,23 @@ export function launchState(level, angle, power, t0 = 0, shieldHits = {}) {
     shieldHitThisShot: [], // shielded targets already hit this shot (immune)
     portalCooldown: {}, // portal pair -> level time until re-entry is allowed
     bouncedPads: [], // bounce pad indices already used this shot
+    // Fuel orbs (v2): indices already banked this attempt, copied in so
+    // a later shot cannot farm the same orb twice. The result carries the
+    // updated list back (game.js merges it into the attempt state).
+    orbsCollected: Array.isArray(orbsCollected) ? orbsCollected.slice() : [],
+    // Mid-flight thrust (v2 core): a per-shot fuel tank. Every launch
+    // starts full; burning drains it; gold orbs refill it mid-flight.
+    // fuelMax / thrustAccel (Block 2, #1-2): the equipped loadout's
+    // tank and burn force for this shot — the base ship is 100 / 15.
+    fuel: fuelMax,
+    fuelMax,
+    thrustAccel: THRUST_ACCEL * mult.thrust,
+    fuelUsed: 0,
+    thrustTime: 0,
+    // Boost pads (Block 2, #3): indices already triggered this shot —
+    // one trigger per pad per shot, so a pad cannot be farmed by
+    // sitting on it. The list resets on the next launch.
+    boostedPads: [],
   };
 }
 
@@ -668,12 +1000,35 @@ function gravityAt(x, y, level, t) {
 // Advance one fixed substep. Returns an event or null. Mutates state.
 // `collected` is the list of target indices already collected this attempt;
 // newly collected indices are appended to `newlyCollected`.
-export function stepFlight(state, level, dt, collected, newlyCollected) {
+// `thrust` (v2) is a { x, y } steering direction for this substep (or null):
+// a unit-ish vector the player (or the thrust bot) holds to burn fuel and
+// accelerate the comet. Fuel burns at FUEL_BURN_RATE while thrusting; an
+// empty tank means no thrust, and a zero/NaN thrust vector is ignored.
+export function stepFlight(state, level, dt, collected, newlyCollected, thrust) {
   if (state.done) return null;
   const t = (state.t0 || 0) + state.t; // planet positions follow level time
   const { ax, ay } = gravityAt(state.x, state.y, level, t);
   state.vx += ax * dt;
   state.vy += ay * dt;
+  // Mid-flight thrust (v2): burn fuel to accelerate along `thrust`.
+  // thrustAccel (Block 2, #1) is the loadout's burn force — the Ion
+  // Thrusters upgrade makes the same hold push 25% harder.
+  if (thrust && typeof thrust.x === 'number' && typeof thrust.y === 'number'
+    && Number.isFinite(thrust.x) && Number.isFinite(thrust.y)
+    && typeof state.fuel === 'number' && Number.isFinite(state.fuel) && state.fuel > 0) {
+    const len = Math.hypot(thrust.x, thrust.y);
+    if (len > 0.01) {
+      const burn = Math.min(state.fuel, FUEL_BURN_RATE * dt);
+      const accel = (typeof state.thrustAccel === 'number' && Number.isFinite(state.thrustAccel) && state.thrustAccel > 0)
+        ? state.thrustAccel : THRUST_ACCEL;
+      const scale = (accel * dt * (burn / (FUEL_BURN_RATE * dt))) / len;
+      state.vx += thrust.x * scale;
+      state.vy += thrust.y * scale;
+      state.fuel -= burn;
+      state.fuelUsed += burn;
+      state.thrustTime += dt;
+    }
+  }
   state.x += state.vx * dt;
   state.y += state.vy * dt;
   state.t += dt;
@@ -769,6 +1124,55 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
       }
     }
   }
+  // Fuel orbs (v2): flying through one banks its points for the attempt
+  // AND refills the fuel tank mid-flight, so a good route through orbs
+  // extends the burn. Non-terminating like a shield crack — the comet
+  // keeps flying, and the event carries the points so the game can bank
+  // them.
+  const newlyOrbs = [];
+  let orbPointsGained = 0;
+  for (let i = 0; i < levelOrbs(level).length; i++) {
+    if (state.orbsCollected.includes(i)) continue;
+    const orb = levelOrbs(level)[i];
+    const dx = state.x - orb.x, dy = state.y - orb.y;
+    const rr = orbRadius(orb) + COMET_RADIUS;
+    if (dx * dx + dy * dy < rr * rr) {
+      state.orbsCollected.push(i);
+      newlyOrbs.push(i);
+      orbPointsGained += orbPoints(orb);
+      // Orb refill caps at the flight's own tank (Block 2, #2): a Big
+      // Tank ship refills up to 130, the base ship up to 100.
+      const cap = (typeof state.fuelMax === 'number' && Number.isFinite(state.fuelMax))
+        ? state.fuelMax : FUEL_MAX;
+      state.fuel = Math.min(cap, (state.fuel || 0) + FUEL_ORB_REFILL);
+    }
+  }
+  // Boost pads (Block 2, #3): a pass-through refills BOOST_PAD_REFILL
+  // fuel (same tank cap) and kicks the comet faster along its current
+  // flight direction. Non-terminating like an orb — the comet keeps
+  // flying, and the event carries the pad index so the game can hide
+  // the mesh. A near-stationary comet gets fuel but no kick (there is
+  // no direction to kick along).
+  const newlyBoosts = [];
+  const boosted = Array.isArray(state.boostedPads) ? state.boostedPads : (state.boostedPads = []);
+  for (let i = 0; i < levelBoostPads(level).length; i++) {
+    if (boosted.includes(i)) continue;
+    const pad = levelBoostPads(level)[i];
+    const dx = state.x - pad.x, dy = state.y - pad.y;
+    const rr = boostPadRadius(pad) + COMET_RADIUS;
+    if (dx * dx + dy * dy < rr * rr) {
+      boosted.push(i);
+      newlyBoosts.push(i);
+      const cap = (typeof state.fuelMax === 'number' && Number.isFinite(state.fuelMax))
+        ? state.fuelMax : FUEL_MAX;
+      state.fuel = Math.min(cap, (state.fuel || 0) + BOOST_PAD_REFILL);
+      const sp = Math.hypot(state.vx, state.vy);
+      if (sp > 0.5) {
+        state.vx += (state.vx / sp) * BOOST_PAD_KICK;
+        state.vy += (state.vy / sp) * BOOST_PAD_KICK;
+      }
+    }
+  }
   // Out of bounds.
   if (state.x * state.x + state.y * state.y > PLAYFIELD_RADIUS * PLAYFIELD_RADIUS) {
     state.done = true;
@@ -784,6 +1188,12 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
   if (newlyShieldHit.length > 0) {
     return { type: 'shieldhit', targets: newlyShieldHit.slice() };
   }
+  if (newlyOrbs.length > 0) {
+    return { type: 'orb', targets: newlyOrbs.slice(), points: orbPointsGained };
+  }
+  if (newlyBoosts.length > 0) {
+    return { type: 'boost', targets: newlyBoosts.slice() };
+  }
   return null;
 }
 
@@ -792,28 +1202,41 @@ export function stepFlight(state, level, dt, collected, newlyCollected) {
 // outcome: 'collected' (all targets gone) | 'partial' (some collected, shot ended)
 //          | 'crash' | 'swallowed' | 'lost' | 'timeout' | 'none' (flew and ended with nothing)
 // opts.t0: level time at launch — matters for moving planets.
+// opts.thrustPolicy (v2): a function (state, level, collected) => { x, y } | null,
+// called every substep — the bot's steering brain, or a recorded player
+// input. Without it the shot is purely ballistic.
+// opts.loadout (Block 2, #1-2): the ship's equipped upgrades for this
+// shot — the preview, the solver and the live game all fly the same
+// loadout, so what the player sees is what the comet does.
 export function simulateLaunch(level, angle, power, alreadyCollected = [], opts = {}) {
   const record = opts.record !== false;
   const collected = alreadyCollected.slice();
-  const state = launchState(level, angle, power, opts.t0 || 0, opts.shieldHits || {});
+  const startOrbs = Array.isArray(opts.orbsCollected) ? opts.orbsCollected.slice() : [];
+  const state = launchState(level, angle, power, opts.t0 || 0, opts.shieldHits || {}, startOrbs, opts.loadout);
+  const thrustPolicy = typeof opts.thrustPolicy === 'function' ? opts.thrustPolicy : null;
   const points = record ? [[state.x, state.y]] : [];
   let steps = 0;
   let lastEvent = null;
   let shieldCracks = 0;
   let portalUses = 0;
   let bounces = 0;
+  let boosts = 0;
   const newly = [];
   while (!state.done) {
     newly.length = 0;
-    const ev = stepFlight(state, level, SUBSTEP, collected, newly);
+    const thrust = thrustPolicy ? thrustPolicy(state, level, collected) : null;
+    const ev = stepFlight(state, level, SUBSTEP, collected, newly, thrust);
     steps++;
     if (record && steps % 4 === 0 && points.length < 600) points.push([state.x, state.y]);
     if (ev) {
-      // Portal hops, bounces and shield cracks never end the shot — the
-      // comet keeps flying, so the simulation continues past them.
+      // Portal hops, bounces, shield cracks and orb pickups never end
+      // the shot — the comet keeps flying, so the simulation continues
+      // past them.
       if (ev.type === 'portal') { portalUses++; lastEvent = ev; continue; }
       if (ev.type === 'bounce') { bounces++; lastEvent = ev; continue; }
       if (ev.type === 'shieldhit') { shieldCracks += ev.targets.length; lastEvent = ev; continue; }
+      if (ev.type === 'orb') { lastEvent = ev; continue; }
+      if (ev.type === 'boost') { boosts += ev.targets.length; lastEvent = ev; continue; }
       lastEvent = ev;
       if (ev.type === 'collect') {
         if (isLevelComplete(level, collected)) {
@@ -840,11 +1263,18 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
   else if (lastEvent && lastEvent.type === 'lost') outcome = 'lost';
   else outcome = 'none';
   if (record) points.push([state.x, state.y]);
+  // Orbs banked by this shot: read from the flight state, not the event
+  // stream — an orb flown through on the same substep as the final
+  // collect (or a crash) is in the state even when its event never fired.
+  const orbs = state.orbsCollected.filter((i) => !startOrbs.includes(i));
+  const orbPointsTotal = orbs.reduce((s, i) => s + orbPoints(levelOrbs(level)[i]), 0);
   return {
     outcome, collected: gained, points, steps,
     time: state.t, end: { x: state.x, y: state.y },
     shieldHits: { ...state.shieldHits },
-    shieldCracks, portalUses, bounces,
+    shieldCracks, portalUses, bounces, boosts,
+    orbs, orbPoints: orbPointsTotal, orbsCollected: state.orbsCollected.slice(),
+    fuelUsed: state.fuelUsed, fuelLeft: state.fuel, thrustTime: state.thrustTime,
   };
 }
 
@@ -856,14 +1286,18 @@ export function simulateLaunch(level, angle, power, alreadyCollected = [], opts 
 // `outcome` here is the simulateLaunch outcome: 'collected' | 'partial' |
 // 'crash' | 'swallowed' | 'lost' | 'timeout' | 'invalid' | 'none'.
 // `t0` is the level time at launch — moving-planet previews depend on it.
-export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0, shieldHits = {}) {
-  const sim = simulateLaunch(level, angle, power, alreadyCollected, { record: true, t0, shieldHits });
+// `loadout` (Block 2, #1-2) is the ship the preview flies: an upgraded
+// tank or stronger burn changes the stub, so the preview never lies.
+export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0, shieldHits = {}, orbsCollected = [], loadout) {
+  const sim = simulateLaunch(level, angle, power, alreadyCollected, { record: true, t0, shieldHits, orbsCollected, loadout });
   return {
     points: sim.points,
     outcome: sim.outcome,
     collected: sim.collected,
     end: sim.end,
     time: sim.time,
+    orbs: sim.orbs,
+    orbPoints: sim.orbPoints,
   };
 }
 
@@ -872,7 +1306,8 @@ export function previewShot(level, angle, power, alreadyCollected = [], t0 = 0, 
 // stats/achievements) migrate forward on load — their stars, unlocks and
 // bests are kept, the new fields start empty. Bump this when the schema
 // changes and add a migration branch in parseSave.
-export const SAVE_VERSION = 2;
+// v4 (Block 2, #1-2): adds `upgrades` — the equipped ship upgrades.
+export const SAVE_VERSION = 4;
 
 // Lifetime counters (Block 16): every shot, collect, lost shot and trick
 // the player ever pulls, so achievements and My Stats can read them.
@@ -892,28 +1327,30 @@ export function defaultSave() {
     version: SAVE_VERSION, stars: {}, unlocked: 1, seenHowTo: false,
     daily: null, seedBest: {}, endlessBest: 0, timeAttackBest: null,
     zenBest: 0, stats: defaultStats(), achievements: [], bestBonus: {},
+    // Ship upgrades (Block 2, #1-2): equipped flags. Both start off —
+    // a new player flies the base ship until the stars unlock them.
+    upgrades: { thrust: false, tank: false },
   };
 }
 
-// Achievements (Block 16): 14 goals across the whole game. `check` reads
-// the save (stars, bests, lifetime stats) and returns true when the goal
-// is met; checkAchievements returns the newly earned ids — the ones met
-// but not yet recorded in save.achievements. Pure: it never mutates.
+// Achievements (v2): 11 goals across the campaign. Mode achievements
+// (daily / endless / zen) are dormant until those modes return in later
+// blocks — no unearnable goals on the list. `check` reads the save
+// (stars, bests, lifetime stats) and returns true when the goal is met;
+// checkAchievements returns the newly earned ids — the ones met but not
+// yet recorded in save.achievements. Pure: it never mutates.
 export const ACHIEVEMENTS = [
   { id: 'first-launch', icon: '☄', name: 'First Launch', desc: 'Launch your first comet.' },
   { id: 'first-star', icon: '★', name: 'Star Catcher', desc: 'Collect your first target.' },
   { id: 'first-win', icon: '✦', name: 'Orbit Cleared', desc: 'Complete your first level.' },
   { id: 'one-shot', icon: '◎', name: 'Hole in One', desc: 'Complete a level in a single shot.' },
   { id: 'triple-star', icon: '✪', name: 'Triple Star', desc: 'Earn 3 stars on any level.' },
-  { id: 'halfway', icon: '◐', name: 'Halfway Home', desc: 'Clear 6 campaign levels.' },
-  { id: 'grand-tour', icon: '◉', name: 'Grand Tour', desc: 'Clear all 12 campaign levels.' },
-  { id: 'constellation', icon: '✧', name: 'Constellation', desc: 'Earn all 36 campaign stars.' },
+  { id: 'halfway', icon: '◐', name: 'Halfway Home', desc: 'Clear 3 campaign levels.' },
+  { id: 'grand-tour', icon: '◉', name: 'Grand Tour', desc: 'Clear all 6 campaign levels.' },
+  { id: 'constellation', icon: '✧', name: 'Constellation', desc: 'Earn all 18 campaign stars.' },
   { id: 'slingshot-10', icon: '↻', name: 'Gravity Dancer', desc: 'Skim 10 slingshot near-misses.' },
   { id: 'last-shot', icon: '♦', name: 'Down to the Wire', desc: 'Complete a level on your last shot.' },
   { id: 'gate-crasher', icon: '◍', name: 'Gate Crasher', desc: 'Fly through a portal.' },
-  { id: 'daily-grind', icon: '☀', name: 'Daily Grind', desc: 'Complete a Daily Orbit.' },
-  { id: 'deep-space', icon: '∞', name: 'Deep Space', desc: 'Reach round 5 in Endless Orbit.' },
-  { id: 'zen-master', icon: '✿', name: 'Zen Master', desc: 'Collect 10 stars in one Zen session.' },
 ];
 const ACHIEVEMENT_IDS = new Set(ACHIEVEMENTS.map((a) => a.id));
 
@@ -927,15 +1364,12 @@ function achievementMet(id, save) {
     case 'first-win': return num('wins') >= 1;
     case 'one-shot': return num('oneShotClears') >= 1;
     case 'triple-star': return Object.values(save.stars || {}).some((s) => s === 3);
-    case 'halfway': return cleared >= 6;
+    case 'halfway': return cleared >= 3;
     case 'grand-tour': return cleared >= LEVELS.length;
     case 'constellation': return totalStars(save) >= LEVELS.length * 3;
     case 'slingshot-10': return num('slingshots') >= 10;
     case 'last-shot': return num('lastShotWins') >= 1;
     case 'gate-crasher': return num('portals') >= 1;
-    case 'daily-grind': return num('dailyWins') >= 1;
-    case 'deep-space': return Number.isInteger(save.endlessBest) && save.endlessBest >= 5;
-    case 'zen-master': return Number.isInteger(save.zenBest) && save.zenBest >= 10;
     default: return false;
   }
 }
@@ -982,6 +1416,19 @@ function sanitizeBestBonus(raw) {
   return out;
 }
 
+// Ship upgrades (Block 2, #1-2): equipped flags, one boolean per known
+// upgrade id. Unknown ids and non-booleans are dropped, so a hand-edited
+// save cannot smuggle in an upgrade that does not exist.
+function sanitizeUpgrades(raw) {
+  const out = { thrust: false, tank: false };
+  if (raw && typeof raw === 'object') {
+    for (const u of UPGRADES) {
+      if (raw[u.id] === true) out[u.id] = true;
+    }
+  }
+  return out;
+}
+
 // stars: { levelId: 0..3 }, unlocked: highest unlocked level id.
 // daily: { date: 'YYYY-MM-DD', stars: 0..3 } — best on today's daily level.
 // seedBest: { seedLabel: 0..3 } — best stars per shared seed (capped at 100).
@@ -993,6 +1440,9 @@ function sanitizeBestBonus(raw) {
 // migrate on load. stats: lifetime counters (defaultStats). achievements:
 // unlocked achievement ids, validated against ACHIEVEMENTS on load/write.
 // bestBonus: best gravity-assist bonus points per campaign level (#4).
+// upgrades: equipped ship upgrades (Block 2, #1-2) — { thrust, tank }
+// booleans, sanitized to known ids. A v3 save has no field and migrates
+// with both upgrades off; the unlock gate in activeLoadout still applies.
 export function serializeSave(save) {
   const daily = save.daily && typeof save.daily.date === 'string'
     && /^\d{4}-\d{2}-\d{2}$/.test(save.daily.date)
@@ -1027,6 +1477,7 @@ export function serializeSave(save) {
     stats: sanitizeStats(save.stats),
     achievements: sanitizeAchievements(save.achievements),
     bestBonus: sanitizeBestBonus(save.bestBonus),
+    upgrades: sanitizeUpgrades(save.upgrades),
   });
 }
 
@@ -1076,10 +1527,13 @@ export function parseSave(json) {
     // unlocks and bests are kept above and the new fields start at their
     // defaults. Whatever version was stored, the parsed save is the
     // current schema, so the next write stamps SAVE_VERSION.
+    // v4 (Block 2, #1-2): a save without `upgrades` migrates with both
+    // upgrades off — nothing is ever auto-equipped by a migration.
     save.version = SAVE_VERSION;
     save.stats = sanitizeStats(raw.stats);
     save.achievements = sanitizeAchievements(raw.achievements);
     save.bestBonus = sanitizeBestBonus(raw.bestBonus);
+    save.upgrades = sanitizeUpgrades(raw.upgrades);
     return save;
   } catch {
     return defaultSave();

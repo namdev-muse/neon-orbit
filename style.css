@@ -70,6 +70,43 @@ html, body {
   margin: 4px 0 0;
 }
 
+/* Fuel tank bar (v2): a real bar in the HUD mid row — the per-shot tank
+   drains as the comet burns, refills at gold orbs. Gold fill, pulsing
+   red when low. Hidden outside aim/fly. */
+.hud-fuel {
+  position: relative;
+  width: 110px;
+  height: 18px;
+  background: rgba(11, 6, 32, 0.85);
+  border: 1px solid var(--gold);
+  border-radius: 999px;
+  overflow: hidden;
+  pointer-events: none;
+}
+#fuel-fill {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #ffd166, #ffb347);
+  transition: width 0.1s linear;
+}
+#fuel-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #1a1206;
+  text-shadow: none;
+}
+.hud-fuel.low #fuel-fill { background: linear-gradient(90deg, #ff3b30, #ff6b60); }
+.hud-fuel.low { animation: fuel-pulse 0.8s ease-in-out infinite; }
+@keyframes fuel-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 59, 48, 0); }
+  50% { box-shadow: 0 0 14px rgba(255, 59, 48, 0.8); }
+}
+
 /* Music style cycler row (Block 17, #36): label left, button right,
    matching the toggle rows in the menu and pause panels. */
 .style-row {
@@ -100,7 +137,7 @@ html, body {
    cyan outline, so keyboard-only play always shows where focus is. */
 .btn:focus-visible, .icon-btn:focus-visible, .level-btn:focus-visible,
 input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
-.seed-row input:focus-visible {
+#power-range:focus-visible {
   outline: 2px solid var(--cyan);
   outline-offset: 2px;
 }
@@ -125,7 +162,7 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) calc(14px + env(safe-area-inset-right, 0px)) 10px calc(14px + env(safe-area-inset-left, 0px));
   pointer-events: none;
   font-size: 15px;
   z-index: 5;
@@ -143,7 +180,33 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
 #hud-shots, #hud-targets { color: var(--text); }
 .hud-timer { color: var(--gold); font-weight: 800; font-variant-numeric: tabular-nums; text-shadow: 0 0 12px rgba(255, 209, 102, 0.7); }
 
-/* ---------- Shot power meter (shown while aiming) ---------- */
+/* ---------- Shot power control (v2, audit fix) ---------- */
+/* Bottom bar while aiming: the power meter + a real slider (the
+   adjustable control) + the Launch button. The drag sets angle only;
+   this sets power. */
+.power-control {
+  position: fixed;
+  left: 14px;
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 5;
+  pointer-events: none;
+}
+.power-control .power-meter {
+  position: static;
+  width: 180px;
+  pointer-events: none;
+}
+.power-control input[type="range"] {
+  width: 180px;
+  accent-color: var(--cyan);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.power-control .btn { pointer-events: auto; margin: 0; }
+
 .power-meter {
   position: fixed;
   left: 14px;
@@ -194,19 +257,23 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
 }
 
 /* ---------- Overlays ---------- */
+/* The overlay is a light veil (v2): the live 3D scene shows through
+   behind the panel — the menu IS the game, never a flat panel over
+   darkness. Safe-area insets keep panels off notches and home bars. */
 .overlay {
   position: fixed;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(7, 3, 19, 0.72);
+  background: rgba(7, 3, 19, 0.38);
+  backdrop-filter: blur(2px);
   z-index: 10;
-  padding: 16px;
+  padding: calc(16px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
 }
 
 .panel {
-  background: linear-gradient(160deg, #120a33 0%, var(--bg-panel) 100%);
+  background: linear-gradient(160deg, rgba(18, 10, 51, 0.92) 0%, rgba(11, 6, 32, 0.92) 100%);
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: 0 0 40px rgba(139, 92, 246, 0.35), 0 0 80px rgba(34, 211, 238, 0.12);
@@ -217,6 +284,62 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   overflow-y: auto;
   text-align: center;
 }
+
+/* The menu panel uses the full desktop width (v2, audit fix): the old
+   460px column on a huge empty desktop is gone. Two columns — actions
+   on the left, setup + campaign map on the right — so the whole menu
+   fits a 720px-tall viewport with every level button visible: the old
+   single column clipped the level grid at the bottom of the panel.
+   The panel is deliberately translucent (0.80) over a light veil so the
+   live 3D scene glows through instead of a flat panel over darkness. */
+.panel-menu {
+  max-width: 960px;
+  display: grid;
+  grid-template-columns: 0.85fr 1.15fr;
+  gap: 4px 28px;
+  text-align: left;
+  padding: 20px 28px;
+  background: linear-gradient(160deg, rgba(18, 10, 51, 0.80) 0%, rgba(11, 6, 32, 0.80) 100%);
+}
+.panel-menu h1, .panel-menu .tagline { grid-column: 1 / -1; text-align: center; }
+.panel-menu h1 { margin: 0 0 2px; }
+.panel-menu .tagline { margin-bottom: 2px; }
+.menu-col { display: flex; flex-direction: column; justify-content: center; }
+.menu-col .btn { margin: 5px 0; }
+.menu-col .total-stars { margin: 6px 0 0; }
+
+/* Menu pop-in (v2): title and buttons ease in with staggered overshoot
+   pops — nothing on the menu is static. The overshoot bezier is the
+   game-feel "back" ease. Reduce motion kills the animation at the CSS
+   level (see the media query below). */
+@keyframes menu-pop {
+  from { opacity: 0; transform: scale(0.82) translateY(14px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.panel-menu > * {
+  animation: menu-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.panel-menu > *:nth-child(1) { animation-delay: 0.00s; }
+.panel-menu > *:nth-child(2) { animation-delay: 0.05s; }
+.panel-menu > *:nth-child(3) { animation-delay: 0.12s; }
+.panel-menu > *:nth-child(4) { animation-delay: 0.19s; }
+.menu-col > * {
+  animation: menu-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.menu-actions > *:nth-child(1) { animation-delay: 0.12s; }
+.menu-actions > *:nth-child(2) { animation-delay: 0.17s; }
+.menu-actions > *:nth-child(3) { animation-delay: 0.22s; }
+.menu-actions > *:nth-child(4) { animation-delay: 0.27s; }
+.menu-actions > *:nth-child(5) { animation-delay: 0.32s; }
+.menu-setup > *:nth-child(1) { animation-delay: 0.19s; }
+.menu-setup > *:nth-child(2) { animation-delay: 0.22s; }
+.menu-setup > *:nth-child(3) { animation-delay: 0.25s; }
+.menu-setup > *:nth-child(4) { animation-delay: 0.28s; }
+.menu-setup > *:nth-child(5) { animation-delay: 0.31s; }
+.menu-setup > *:nth-child(6) { animation-delay: 0.34s; }
+.menu-setup > *:nth-child(7) { animation-delay: 0.37s; }
+.menu-setup > *:nth-child(8) { animation-delay: 0.40s; }
+.menu-setup > *:nth-child(9) { animation-delay: 0.43s; }
 
 .panel h1 {
   margin: 0 0 4px;
@@ -239,8 +362,7 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   color: var(--gold);
 }
 
-.tagline { color: var(--muted); margin: 0 0 4px; }
-.version { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
+.tagline { color: var(--muted); margin: 0 0 18px; }
 .total-stars { color: var(--gold); margin: 16px 0 10px; font-size: 15px; }
 .big-stars { font-size: 40px; color: var(--gold); margin: 8px 0; letter-spacing: 6px; text-shadow: 0 0 18px rgba(255, 209, 102, 0.8); }
 
@@ -266,16 +388,31 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   border: 1px solid var(--violet);
   border-radius: 10px;
   cursor: pointer;
-  transition: transform 0.08s ease, box-shadow 0.15s ease, background 0.15s ease;
+  transition: transform 0.12s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.15s ease, background 0.15s ease;
   touch-action: manipulation;
+}
+
+/* The primary action is the only full-weight button on the menu (v2):
+   secondary actions are visually subordinate — smaller, dimmer, never
+   the same weight as Play. */
+.panel-menu .btn:not(.primary) {
+  background: rgba(139, 92, 246, 0.12);
+  border-color: rgba(139, 92, 246, 0.55);
+  font-size: 15px;
+  padding: 11px 16px;
+}
+.panel-menu .btn.primary {
+  font-size: 20px;
+  padding: 16px 18px;
 }
 
 .btn:hover, .btn:focus-visible {
   background: rgba(139, 92, 246, 0.4);
   box-shadow: 0 0 16px rgba(139, 92, 246, 0.6);
+  transform: scale(1.04);
 }
 
-.btn:active { transform: scale(0.97); }
+.btn:active { transform: scale(0.96); }
 
 .btn.primary {
   background: rgba(34, 211, 238, 0.2);
@@ -314,7 +451,8 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   touch-action: manipulation;
 }
 
-.icon-btn:hover { border-color: var(--cyan); }
+.icon-btn:hover { border-color: var(--cyan); transform: scale(1.06); }
+.icon-btn:active { transform: scale(0.95); }
 
 .icon-btn:focus-visible { border-color: var(--cyan); }
 
@@ -347,7 +485,8 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   touch-action: manipulation;
 }
 
-.level-btn:hover:not(:disabled) { background: rgba(139, 92, 246, 0.35); box-shadow: 0 0 12px rgba(139, 92, 246, 0.5); }
+.level-btn:hover:not(:disabled) { background: rgba(139, 92, 246, 0.35); box-shadow: 0 0 12px rgba(139, 92, 246, 0.5); transform: scale(1.04); }
+.level-btn:active:not(:disabled) { transform: scale(0.97); }
 .level-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .level-btn.current {
   border-color: var(--gold);
@@ -430,7 +569,17 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
 
 /* ---------- Achievements overlay ---------- */
 .achievements-count { color: var(--gold); font-weight: 700; margin: 4px 0 12px; font-size: 15px; }
-.achievements-grid { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; text-align: left; }
+/* Capped height + its own scroll (v2, audit fix): the old grid grew
+   taller than the viewport and cut off the last rows. */
+.achievements-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+  text-align: left;
+  max-height: 55vh;
+  overflow-y: auto;
+}
 .achievement-row {
   display: grid;
   grid-template-columns: 28px 1fr auto;
@@ -456,30 +605,28 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
 .level-btn .lvl-stars { display: block; color: var(--gold); font-size: 13px; letter-spacing: 2px; min-height: 16px; }
 .level-btn .lvl-par { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
 
-/* ---------- Seed row (menu) ---------- */
-.seed-row {
-  display: flex;
-  gap: 8px;
-  margin: 8px 0;
-}
+/* Menu tightening (Block 2): the setup column must fit 720px with the
+   upgrades living in the actions column — shave the settings rows and
+   the campaign/level gaps so the panel never scrolls at 1280x720. */
+.panel-menu .toggle-row { margin: 6px 0 2px; }
+.panel-menu .slider-row { margin: 8px 0 2px; }
+.panel-menu .campaign-progress { margin-top: 8px; }
+.panel-menu .level-select { margin-top: 8px; }
 
-.seed-row input {
-  flex: 1;
-  min-width: 0;
-  padding: 10px 12px;
-  font-size: 15px;
-  color: var(--text);
-  background: rgba(11, 6, 32, 0.85);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.seed-row input:focus {
-  border-color: var(--cyan);
-  box-shadow: 0 0 12px rgba(34, 211, 238, 0.5);
-}
-
-.seed-row .btn { margin: 0; width: auto; }
+/* ---------- Ship upgrades (Block 2, #1-2) ---------- */
+/* Stacked in the actions column (the setup column is full at 720px):
+   one full-width toggle button per upgrade, name + one-line desc. */
+.upgrades { margin-top: 14px; text-align: left; }
+.upgrades h3 { margin: 0 0 6px; font-size: 15px; letter-spacing: 1px; }
+.upgrades-list { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.upgrade-btn { display: block; text-align: left; padding: 10px 12px; line-height: 1.35; }
+.upgrade-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.upgrade-btn.equipped { border-color: var(--gold); background: rgba(255, 209, 102, 0.14); box-shadow: 0 0 12px rgba(255, 209, 102, 0.4); }
+.upgrade-name { display: block; font-weight: 700; font-size: 14px; }
+.upgrade-desc { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.upgrade-btn.equipped .upgrade-desc { color: var(--gold); }
+/* Equipped-upgrade chips in the HUD (Block 2, #1-2). */
+.hud-upgrades { color: var(--gold); font-size: 12px; font-weight: 700; white-space: nowrap; }
 
 /* ---------- Pause slider + settings toggles ---------- */
 .slider-row {
@@ -514,13 +661,21 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
 }
 
 /* ---------- Small screens ---------- */
+@media (max-width: 720px) {
+  .panel-menu { grid-template-columns: 1fr; max-width: 100%; }
+  .panel-menu h1, .panel-menu .tagline { text-align: center; }
+  .menu-col { justify-content: flex-start; }
+}
 @media (max-width: 560px) {
   .panel { padding: 20px 18px; }
   .panel h1 { font-size: 32px; letter-spacing: 2px; }
   #hud { font-size: 13px; padding: 8px 10px; flex-wrap: wrap; }
   #hud .hud-mid { order: 3; width: 100%; justify-content: center; }
   #aim-readout { font-size: 12px; bottom: 10px; max-width: 92vw; white-space: normal; text-align: center; }
-  .power-meter { width: 130px; bottom: 10px; left: 10px; }
+  .power-control { left: 10px; bottom: 10px; gap: 8px; }
+  .power-control .power-meter { width: 120px; }
+  .power-control input[type="range"] { width: 110px; }
+  .hud-fuel { width: 84px; }
   .level-select { grid-template-columns: repeat(2, 1fr); }
 }
 
@@ -534,7 +689,9 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   #hud .hud-left, #hud .hud-mid, #hud .hud-right { gap: 6px; }
   .icon-btn { padding: 6px 8px; font-size: 12px; }
   .zoom-label { min-width: 36px; font-size: 12px; }
-  .power-meter { width: 110px; }
+  .power-control { gap: 6px; }
+  .power-control .power-meter { width: 96px; }
+  .power-control input[type="range"] { width: 84px; }
   .howto-list { font-size: 14px; }
 }
 
@@ -544,8 +701,7 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   .panel { padding: 14px 18px; max-height: 96vh; }
   .panel h1 { font-size: 26px; margin-bottom: 2px; }
   .tagline { display: none; }
-  .version { margin-bottom: 10px; }
   .btn { padding: 9px 14px; margin: 5px 0; }
   #aim-readout { bottom: 8px; }
-  .power-meter { bottom: 8px; }
+  .power-control { bottom: 8px; }
 }

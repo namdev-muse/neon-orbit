@@ -1,6 +1,9 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.17.0).
-// Drag back from the comet to aim, release to launch. Planets bend the
-// flight with gravity; collect every magenta target before shots run out.
+// Neon Orbit v2 — Three.js 3D gravity-slingshot puzzle (v2.1.0).
+// Drag to aim, release to launch — then STEER the comet mid-flight with
+// limited fuel thrust. Planets bend the flight with gravity; collect
+// every magenta target before shots run out. The prediction oracle is
+// dead: the preview shows only the first second of flight, never the
+// outcome.
 import * as THREE from 'three';
 import {
   LEVELS, PLAYFIELD_RADIUS, SUBSTEP,
@@ -12,18 +15,23 @@ import {
   dateSeed, dateKey, dailyDifficulty, endlessDifficulty, parseSeedParam,
   generateLevel, registerGeneratedLevel, solveShot,
   TIME_ATTACK_LEVEL_IDS, TIME_ATTACK_SECONDS, formatClock,
-  clampZoom, isTapGesture, focusStep, createPerfGuard, PERF_LEVELS,
+  clampZoom, focusStep, createPerfGuard, PERF_LEVELS,
   slowMoScale, SLOW_MO_MS, zenLevel, ZEN_ID,
   ACHIEVEMENTS, checkAchievements, defaultStats,
   MUSIC_STYLES, musicStyleById, nextMusicStyleId,
   flashAllowed, FLASH_MIN_INTERVAL_MS,
   GRAVITY_ASSIST_POINTS, gravityAssistPoints,
+  ORB_POINTS, levelOrbs, orbPoints,
+  FUEL_MAX, FUEL_ORB_REFILL, canThrust, thrustPolicyFor, solveLevelThrust,
+  // Ship upgrades + boost pads (Block 2, #1-3).
+  UPGRADES, upgradeById, upgradeUnlocked, activeLoadout,
+  levelBoostPads, boostPadRadius, BOOST_PAD_REFILL, BOOST_PAD_KICK,
 } from './physics.js';
 
-export const VERSION = '0.17.0';
+export const VERSION = '2.1.0';
 const THREE_VERSION = '0.160.0';
-const SAVE_KEY = 'nor-stars';
-const SETTINGS_KEY = 'nor-settings';
+const SAVE_KEY = 'nor2-stars';
+const SETTINGS_KEY = 'nor2-settings';
 const MAX_DRAG = 12; // world units of pull for full launch power
 const PREVIEW_MAX = 240;
 const PREVIEW_DOTS = 96; // fading trajectory dots sampled from the preview
@@ -82,6 +90,22 @@ const state = {
   // attempt (+100 per slingshot near-miss) and how many slingshots paid.
   assistBonus: 0,
   assistCount: 0,
+  // Trail pickup orbs (v2: fuel orbs): points banked from orbs this
+  // attempt (added to assistBonus, the same bonus bank) and which orb
+  // indices are already collected, so a later shot cannot farm them.
+  // Orbs also refill fuel mid-flight (physics handles the tank).
+  orbCount: 0,
+  orbsCollected: [],
+  // Mid-flight thrust (v2 core): the live steering state. thrustDir is
+  // the current burn direction (unit vector) or null; thrustKeys tracks
+  // held WASD/arrow keys; pointerThrust steers toward the held pointer.
+  // fastForward (Skip / Space mid-flight) runs the sim at 3x.
+  thrustDir: null,
+  thrustKeys: new Set(),
+  pointerThrust: null, // { x, y } world position the comet steers toward
+  thrustBurning: false,
+  fastForward: false,
+  shotCollectedCount: 0, // targets collected on the current shot (toast fix)
 };
 
 function loadSave() {
@@ -285,6 +309,30 @@ const sfx = {
     tone(1180, 0.1, 'square', 0.07);
     tone(1240, 0.1, 'square', 0.06, null, 0.02);
     noiseBurst(0.06, 0.06, 4000);
+  },
+  // Trail orb pickup (#12): a bright gold ping, higher than the collect
+  // chime so the render check (and the player) can tell them apart.
+  orb() {
+    recordSfx('orb');
+    tone(1318, 0.1, 'sine', 0.14);
+    tone(1760, 0.16, 'sine', 0.14, null, 0.06);
+  },
+  // Boost pad (Block 2, #3): a teal zap — two quick rising tones, faster
+  // and lower than the orb ping so the pad reads as speed, not a pickup.
+  boost() {
+    recordSfx('boost');
+    tone(520, 0.09, 'square', 0.09, 1040);
+    tone(1040, 0.12, 'sine', 0.1, 1560, 0.05);
+  },
+  // UI hover tick (v2 menu): a tiny high blip on button hover — the
+  // small-tier tick the game-feel skill asks for on every menu button.
+  tick() { recordSfx('tick'); tone(1180, 0.03, 'square', 0.03); },
+  // Thrust burn (v2): a short rising sweep plus a whoosh as the comet
+  // burns. Fired on burn start and throttled while burning.
+  thrust() {
+    recordSfx('thrust');
+    tone(300, 0.18, 'sawtooth', 0.07, 900);
+    noiseBurst(0.15, 0.05, 2000);
   },
   win() {
     recordSfx('win');
@@ -513,6 +561,17 @@ const portalDiscMats = PORTAL_COLORS.map((c) => new THREE.MeshBasicMaterial({
   color: c, transparent: true, opacity: 0.3,
   blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
 }));
+// Boost pads (Block 2, #3): a teal disc with a bright ring, flat on
+// the playfield — distinct from lime bounce pads and gold orbs at a
+// glance, so the fast line reads before the player flies it.
+const boostPadGeo = new THREE.CircleGeometry(1, 48);
+const boostPadMat = new THREE.MeshStandardMaterial({
+  color: 0x2dd4bf, emissive: 0x2dd4bf, emissiveIntensity: 0.55, roughness: 0.4, metalness: 0.1,
+});
+const boostPadRingGeo = new THREE.RingGeometry(0.92, 1, 48);
+const boostPadRingMat = new THREE.MeshBasicMaterial({
+  color: 0x99f6e4, transparent: true, opacity: 0.9, side: THREE.DoubleSide,
+});
 // Bounce pads: a lime disc with a bright ring, flat on the playfield.
 const bouncePadGeo = new THREE.CircleGeometry(1, 48);
 const bouncePadMat = new THREE.MeshStandardMaterial({
@@ -528,11 +587,19 @@ const shieldRingGeo = new THREE.TorusGeometry(1, 0.07, 8, 48);
 const shieldRingMat = new THREE.MeshBasicMaterial({
   color: 0xe2e8f0, transparent: true, opacity: 0.85,
 });
+// Trail pickup orbs (#12): small gold octahedrons (half the target size)
+// that spin and pulse; they vanish when flown through.
+const orbGeo = new THREE.OctahedronGeometry(1, 0);
+const orbMat = new THREE.MeshStandardMaterial({
+  color: 0xffd166, emissive: 0xffd166, emissiveIntensity: 1.2, roughness: 0.3, metalness: 0.1,
+});
 
-// Playfield disc + boundary ring.
+// Playfield disc + boundary ring. discMat is named (not inline) so a
+// level theme can tint the disc per level (v2 level identity).
+const discMat = new THREE.MeshBasicMaterial({ color: 0x0d0826 });
 const disc = new THREE.Mesh(
   new THREE.CircleGeometry(PLAYFIELD_RADIUS, 72),
-  new THREE.MeshBasicMaterial({ color: 0x0d0826 }),
+  discMat,
 );
 disc.position.z = -0.6;
 scene.add(disc);
@@ -560,7 +627,7 @@ scene.add(boundary);
 // 2-octave value-noise nebula in violet / magenta / cyan on a plane behind
 // the starfield, so the sky has depth instead of flat black. The uTime
 // uniform advances every frame in the animate loop.
-const nebulaUniforms = { uTime: { value: 0 } };
+const nebulaUniforms = { uTime: { value: 0 }, uTint: { value: new THREE.Color(0xffffff) } };
 const nebulaMat = new THREE.ShaderMaterial({
   uniforms: nebulaUniforms,
   vertexShader: `
@@ -572,6 +639,7 @@ const nebulaMat = new THREE.ShaderMaterial({
   `,
   fragmentShader: `
     uniform float uTime;
+    uniform vec3 uTint;
     varying vec2 vUv;
     // Cheap hash (no sin — a sin-based hash is far too slow for a
     // fullscreen shader under software rendering, and it stalled the
@@ -611,7 +679,7 @@ const nebulaMat = new THREE.ShaderMaterial({
       vec3 col = base + violet * smoothstep(0.35, 0.75, n);
       col += magenta * smoothstep(0.55, 0.85, m) * 0.7;
       col += cyan * smoothstep(0.6, 0.9, n * m) * 0.5;
-      gl_FragColor = vec4(col, 1.0);
+      gl_FragColor = vec4(col * uTint, 1.0);
     }
   `,
   depthWrite: false,
@@ -664,6 +732,8 @@ let shieldMeshes = []; // shield ring per target (null unless shielded)
 let blackHoleMeshes = []; // { disc, ring } per black hole (disc spins)
 let portalMeshes = []; // { group, disc, ring } per portal (disc swirls)
 let bouncePadMeshes = []; // { disc, ring } per bounce pad
+let boostPadMeshes = []; // { disc, ring } per boost pad (Block 2, #3)
+let orbMeshes = []; // gold octahedron per trail orb (null when collected)
 
 // Comet + its glow light.
 const comet = new THREE.Mesh(cometGeo, cometMat);
@@ -698,23 +768,8 @@ previewDots.frustumCulled = false;
 previewDots.visible = false;
 scene.add(previewDots);
 
-// Predicted-end marker: a pulsing ring at the previewed shot's end point,
-// coloured by predicted outcome — gold = target hit, red = planet crash,
-// cyan = flies out of bounds / runs out of steam.
-const previewEndRing = new THREE.Mesh(
-  new THREE.TorusGeometry(0.9, 0.09, 8, 40),
-  new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9 }),
-);
-previewEndRing.frustumCulled = false;
-previewEndRing.visible = false;
-scene.add(previewEndRing);
-const PREVIEW_END_COLORS = {
-  collect: 0xffd166,
-  crash: 0xff3b30,
-  swallowed: 0xff3b30,
-  lost: 0x22d3ee,
-  none: 0x22d3ee,
-};
+// The oracle's end marker is gone in v2: no ring, no verdict dot, no
+// predicted outcome — the preview is a short stub and nothing more.
 
 // Comet trail (cyan line, recent positions) + its glow ribbon (#28): a
 // triangle strip whose width tapers and whose colour fades to black along
@@ -956,6 +1011,7 @@ let hitStopToken = 0;
 let slingshotCount = 0; // near-miss slingshots credited on the current shot
 let portalCount = 0; // portal hops on the current shot
 let bounceCount = 0; // bounce-pad reflections on the current shot
+let boostCount = 0; // boost-pad triggers on the current shot (Block 2, #3)
 let shieldHitCount = 0; // shield cracks on the current shot
 // Near-miss slow-mo (#31): a real-time deadline — while now < slowMoUntil
 // the animate loop runs the simulation at SLOW_MO_SCALE. The deadline is
@@ -1070,6 +1126,24 @@ function feedback(kind, x, y) {
     shieldHitCount++;
     sfx.shieldhit();
     spawnBurst(x, y, 0, 0xe2e8f0, 18, 6, 0.5);
+  } else if (kind === 'orb') {
+    // Trail orb (#12): a gold ping and a small gold burst; the bonus
+    // banking itself lives in stepFlightLoop, which knows the points.
+    sfx.orb();
+    spawnBurst(x, y, 0, 0xffd166, 16, 6, 0.5);
+  } else if (kind === 'boost') {
+    // Boost pad (Block 2, #3): a teal zap and a teal burst — the fuel
+    // refill and the speed kick already happened in the physics; the
+    // mesh hiding lives in stepFlightLoop, which knows the pad index.
+    boostCount++;
+    sfx.boost();
+    spawnBurst(x, y, 0, 0x2dd4bf, 18, 7, 0.5);
+    spawnShockwave(x, y, 0x2dd4bf, 4, 0.5);
+  } else if (kind === 'thrust') {
+    // Thrust burn (v2): a cyan kick burst behind the comet — no trauma
+    // beyond the small tier, so burning never shakes the camera hard.
+    sfx.thrust();
+    spawnBurst(x, y, 0, 0x22d3ee, 12, 5, 0.4);
   } else if (kind === 'win') {
     sfx.win();
   }
@@ -1134,19 +1208,38 @@ const OVERLAY_PRIMARY = {
   achievements: 'btn-achievements-close',
 };
 
+// Screen stack (v2): overlays are a stack, not boolean flags — pushing
+// How to Play / Stats / Achievements from the menu remembers the menu,
+// and closing pops back to it. Phase transitions (menu -> aim, fly ->
+// complete) use showOverlay directly; menu-side navigation uses
+// openScreen / closeScreen so Escape and Back always land somewhere sane.
+const screenStack = [];
+function focusPrimary(id) {
+  const primary = OVERLAY_PRIMARY[id];
+  if (!primary) return;
+  const el = $(primary);
+  if (el && !el.disabled) el.focus({ preventScroll: true });
+}
 function showOverlay(id) {
   for (const o of OVERLAYS) $(o).classList.toggle('hidden', o !== id);
   if (!id) for (const o of OVERLAYS) $(o).classList.add('hidden');
-  if (id && OVERLAY_PRIMARY[id]) {
-    const el = $(OVERLAY_PRIMARY[id]);
-    if (el && !el.disabled) el.focus({ preventScroll: true });
-  }
+  if (id) focusPrimary(id);
 }
-function showOnly(id) {
-  if (id) showOverlay(id);
-  else showOverlay(null);
+function visibleScreen() {
+  return OVERLAYS.find((o) => !$(o).classList.contains('hidden')) || null;
 }
-
+function openScreen(id) {
+  const cur = visibleScreen();
+  if (cur && cur !== id) screenStack.push(cur);
+  state.phase = id;
+  showOverlay(id);
+}
+function closeScreen() {
+  const prev = screenStack.pop();
+  const target = prev || 'menu';
+  state.phase = target;
+  showOverlay(target);
+}
 function challengeBest(mode) {
   if (mode === 'daily') {
     return (save.daily && save.daily.date === state.dailyDate) ? save.daily.stars : 0;
@@ -1156,6 +1249,13 @@ function challengeBest(mode) {
   return 0;
 }
 
+// The fuel tank this flight flies with (Block 2, #2): the live
+// flight's own fuelMax while flying, the active loadout's tank while
+// aiming — so the HUD bar reads 130 on a Big Tank ship, not 100.
+function currentFuelMax() {
+  if (flight && typeof flight.fuelMax === 'number' && Number.isFinite(flight.fuelMax)) return flight.fuelMax;
+  return FUEL_MAX * activeLoadout(save).tank;
+}
 function updateHUD() {
   const level = levelById(state.levelId);
   const budget = level ? shotBudget(level) : 0;
@@ -1189,6 +1289,27 @@ function updateHUD() {
   const bonusEl = $('hud-bonus');
   bonusEl.classList.toggle('hidden', state.assistBonus <= 0);
   bonusEl.textContent = `Bonus +${state.assistBonus}`;
+  // Fuel tank (v2): a real bar, not a chip — the per-shot tank drains as
+  // the comet burns and refills at gold orbs. Hidden outside aim/fly so
+  // menus stay clean. The width is refreshed every frame in animate, so
+  // this only handles visibility here.
+  const fuelEl = $('hud-fuel');
+  if (fuelEl) {
+    const inPlay = state.phase === 'aim' || state.phase === 'fly';
+    fuelEl.classList.toggle('hidden', !inPlay);
+  }
+  // Ship upgrades (Block 2, #1-2): equipped upgrades show as chips in
+  // the HUD so the player can see what ship they are flying.
+  const upEl = $('hud-upgrades');
+  if (upEl) {
+    const loadout = activeLoadout(save);
+    const names = [];
+    if (loadout.thrust) names.push('Ion Thrusters');
+    if (loadout.tank) names.push('Big Tank');
+    upEl.classList.toggle('hidden', names.length === 0 || (state.phase !== 'aim' && state.phase !== 'fly'));
+    upEl.textContent = names.length ? `✦ ${names.join(' · ')}` : '';
+  }
+  updateSkipButton();
   // The Time Attack clock lives in the HUD mid row, gold and bold; the
   // animate loop refreshes its text once per second while the run ticks.
   const timerEl = $('hud-timer');
@@ -1196,25 +1317,55 @@ function updateHUD() {
   if (state.mode === 'timeattack') timerEl.textContent = `⏱ ${formatClock(state.timeLeft)}`;
 }
 
-// Shot power meter (HUD, shown while aiming): fill width = launch power,
-// colour ramps cyan -> gold -> red as power rises.
+// Fuel bar fill (v2): width = fuel remaining on the live flight (or a
+// full tank while aiming). Called every frame while flying; writes the
+// DOM only when the percentage actually moves.
+let lastFuelPct = -1;
+function updateFuelBar() {
+  const fill = $('fuel-fill');
+  if (!fill) return;
+  const fuel = flight ? flight.fuel : currentFuelMax();
+  const pct = Math.max(0, Math.min(100, Math.round((fuel / currentFuelMax()) * 100)));
+  if (pct === lastFuelPct) return;
+  lastFuelPct = pct;
+  fill.style.width = `${pct}%`;
+  const bar = $('hud-fuel');
+  if (bar) bar.classList.toggle('low', pct <= 25);
+}
+
+// Skip / fast-forward button (v2, audit fix): visible mid-flight only.
+// Space toggles the same flag; the button is the touch equivalent.
+function updateSkipButton() {
+  const btn = $('btn-skip');
+  if (!btn) return;
+  btn.classList.toggle('hidden', state.phase !== 'fly');
+  btn.textContent = state.fastForward ? '⏩ Fast-forwarding…' : 'Skip »';
+}
+
+// Shot power control (v2, audit fix): the power is a REAL adjustable
+// control — a slider plus the arrow keys — not a read-only meter. The
+// drag sets angle only; this slider sets power. Shown while aiming.
 function updatePowerMeter() {
-  const meter = $('power-meter');
+  const control = $('power-control');
   const fill = $('power-fill');
   const label = $('power-label');
+  const range = $('power-range');
   if (state.phase !== 'aim') {
-    meter.classList.add('hidden');
+    if (control) control.classList.add('hidden');
     return;
   }
-  meter.classList.remove('hidden');
+  if (control) control.classList.remove('hidden');
   const pct = Math.round(state.aimPower * 100);
-  fill.style.width = `${pct}%`;
-  fill.style.background = state.aimPower < 0.5
-    ? 'linear-gradient(90deg, #22d3ee, #7dd3fc)'
-    : state.aimPower < 0.8
-      ? 'linear-gradient(90deg, #22d3ee, #ffd166)'
-      : 'linear-gradient(90deg, #ffd166, #ff3b30)';
-  label.textContent = `Power ${pct}%${state.fineAim ? ' · FINE' : ''}`;
+  if (fill) {
+    fill.style.width = `${pct}%`;
+    fill.style.background = state.aimPower < 0.5
+      ? 'linear-gradient(90deg, #22d3ee, #7dd3fc)'
+      : state.aimPower < 0.8
+        ? 'linear-gradient(90deg, #22d3ee, #ffd166)'
+        : 'linear-gradient(90deg, #ffd166, #ff3b30)';
+  }
+  if (label) label.textContent = `Power ${pct}%${state.fineAim ? ' · FINE' : ''}`;
+  if (range && Number(range.value) !== pct) range.value = String(pct);
 }
 
 function setAimReadout(text) {
@@ -1261,7 +1412,7 @@ function renderLevelSelect() {
       parLine.textContent = 'Finish the previous level';
     } else {
       const t = starThresholds(level.par);
-      parLine.textContent = `Par ${level.par} · ★★★ ≤ ${t.three} · ★★ ${t.two} · ★ ${t.one}`;
+      parLine.textContent = `Par ${level.par} · ★★★≤${t.three} ★★≤${t.two} ★≤${t.one}`;
     }
     btn.append(name, starLine, parLine);
     if (!locked && nextLevel && level.id === nextLevel.id) {
@@ -1286,7 +1437,54 @@ function renderLevelSelect() {
   $('campaign-progress-stars').textContent = `${earned} / ${maxStars} stars`;
   $('campaign-progress-fill').style.width = `${Math.round((earned / maxStars) * 100)}%`;
   $('total-stars').textContent = String(earned);
-  updateChallengeMenu();
+  renderUpgrades();
+}
+
+// Ship upgrades (Block 2, #1-2): one toggle button per upgrade in Level
+// Select. Locked upgrades show their star requirement and stay disabled;
+// unlocked ones equip / unequip with a tap, persist to the save, and
+// re-render so the state reads at a glance. The delegated hover tick
+// covers .btn buttons, so these get the menu tick + CSS pop for free.
+function renderUpgrades() {
+  const list = $('upgrades-list');
+  if (!list) return;
+  list.innerHTML = '';
+  const earned = totalStars(save);
+  const equipped = save.upgrades || {};
+  for (const u of UPGRADES) {
+    const unlocked = upgradeUnlocked(u.id, earned);
+    const on = unlocked && equipped[u.id] === true;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn upgrade-btn' + (on ? ' equipped' : '');
+    btn.disabled = !unlocked;
+    btn.setAttribute('aria-pressed', String(on));
+    const name = document.createElement('span');
+    name.className = 'upgrade-name';
+    name.textContent = unlocked
+      ? `${on ? '✓ ' : ''}${u.name}`
+      : `🔒 ${u.name}`;
+    const desc = document.createElement('span');
+    desc.className = 'upgrade-desc';
+    desc.textContent = unlocked
+      ? `${u.desc} — ${on ? 'Equipped (tap to unequip)' : 'Tap to equip'}`
+      : `${u.desc} — unlocks at ${u.unlockStars} ★ (you have ${earned})`;
+    btn.append(name, desc);
+    btn.addEventListener('click', () => {
+      if (!upgradeUnlocked(u.id, totalStars(save))) return;
+      ensureAudio();
+      sfx.click();
+      if (!save.upgrades) save.upgrades = { thrust: false, tank: false };
+      save.upgrades[u.id] = !save.upgrades[u.id];
+      persistSave();
+      renderUpgrades();
+      updateHUD();
+      announce(save.upgrades[u.id]
+        ? `${u.name} equipped — ${u.desc}.`
+        : `${u.name} unequipped.`);
+    });
+    list.appendChild(btn);
+  }
 }
 
 // Best-stars table: one row per campaign level (stars earned + par),
@@ -1381,23 +1579,15 @@ function resetSave() {
   announce('Progress reset — all stars, unlocks and achievements erased.');
 }
 
-// The Daily button shows today's date plus the best stars earned on it so
-// far today; the seed input keeps whatever ?seed= (or the last typed seed)
-// put there.
-function updateChallengeMenu() {
-  const dailyBtn = $('btn-daily');
-  if (dailyBtn) {
-    const today = dateKey(new Date());
-    const best = (save.daily && save.daily.date === today) ? save.daily.stars : 0;
-    dailyBtn.textContent = best > 0
-      ? `Daily Orbit — ${today} · ${'★'.repeat(best)}${'☆'.repeat(3 - best)}`
-      : `Daily Orbit — ${today}`;
-  }
-}
-
 // ---------------------------------------------------------------- level flow
 function buildLevelMeshes(level) {
   while (levelGroup.children.length) levelGroup.remove(levelGroup.children[0]);
+  // Per-level identity (v2, audit fix): each level tints its playfield
+  // disc and its nebula, so no two levels look alike.
+  if (level.theme) {
+    if (level.theme.disc) discMat.color.set(level.theme.disc);
+    if (level.theme.tint) nebulaUniforms.uTint.value.set(level.theme.tint);
+  }
   planetMeshes = [];
   planetRings = [];
   planetGlows = [];
@@ -1407,6 +1597,8 @@ function buildLevelMeshes(level) {
   blackHoleMeshes = [];
   portalMeshes = [];
   bouncePadMeshes = [];
+  boostPadMeshes = [];
+  orbMeshes = [];
   for (const p of level.planets) {
     const mat = new THREE.MeshStandardMaterial({
       color: p.color, emissive: p.color, emissiveIntensity: 0.55,
@@ -1496,6 +1688,26 @@ function buildLevelMeshes(level) {
     levelGroup.add(ring);
     bouncePadMeshes.push({ disc, ring });
   }
+  // Boost pads (Block 2, #3): a teal disc on the playfield with a
+  // bright rim. A pad already triggered this shot starts hidden when
+  // the meshes are rebuilt from a restored attempt state.
+  for (const pad of levelBoostPads(level)) {
+    const disc = new THREE.Mesh(boostPadGeo, boostPadMat);
+    disc.position.set(pad.x, pad.y, -0.3);
+    disc.scale.setScalar(boostPadRadius(pad));
+    levelGroup.add(disc);
+    const ring = new THREE.Mesh(boostPadRingGeo, boostPadRingMat);
+    ring.position.set(pad.x, pad.y, -0.25);
+    ring.scale.setScalar(boostPadRadius(pad));
+    levelGroup.add(ring);
+    boostPadMeshes.push({ disc, ring });
+  }
+  for (const idx of (flight ? flight.boostedPads || [] : [])) {
+    if (boostPadMeshes[idx]) {
+      boostPadMeshes[idx].disc.visible = false;
+      boostPadMeshes[idx].ring.visible = false;
+    }
+  }
   level.targets.forEach((t, i) => {
     const m = new THREE.Mesh(targetGeo, targetMat);
     m.position.set(t.x, t.y, 0);
@@ -1533,6 +1745,20 @@ function buildLevelMeshes(level) {
       shieldMeshes.push(null);
     }
   });
+  // Trail pickup orbs (#12): small gold octahedrons on the flight paths.
+  // An orb already banked this attempt (a retry replays the same level
+  // only via beginLevel, which resets the list) starts hidden when the
+  // mesh is built from a restored attempt state.
+  for (const orb of levelOrbs(level)) {
+    const m = new THREE.Mesh(orbGeo, orbMat);
+    m.position.set(orb.x, orb.y, 0);
+    m.scale.setScalar(0.55);
+    levelGroup.add(m);
+    orbMeshes.push(m);
+  }
+  for (const idx of state.orbsCollected) {
+    if (orbMeshes[idx]) orbMeshes[idx].visible = false;
+  }
 }
 
 function defaultAimAngle(level, collected) {
@@ -1556,15 +1782,11 @@ function setAim(angle, power) {
   updatePowerMeter();
   const deg = Math.round((state.aimAngle * 180) / Math.PI);
   const pct = Math.round(state.aimPower * 100);
-  const prediction = {
-    collect: ' · Predicted: target hit',
-    crash: ' · Predicted: crash!',
-    swallowed: ' · Predicted: swallowed!',
-    lost: ' · Predicted: flies out',
-    none: ' · Predicted: runs out of steam',
-  }[state.previewOutcome] || '';
+  // No prediction text, ever (audit fix): the readout states the aim and
+  // nothing else. The player judges the shot; the game never hands them
+  // the answer.
   const fine = state.fineAim ? ' · FINE AIM' : '';
-  setAimReadout(`Angle ${deg}° · Power ${pct}%${fine}${prediction} — release to launch`);
+  setAimReadout(`Angle ${deg}° · Power ${pct}%${fine} — drag to aim, release to launch`);
 }
 
 const dotGold = new THREE.Color(0xffd166);
@@ -1576,23 +1798,23 @@ function updatePreview() {
   if (state.phase !== 'aim' || !level) {
     previewLine.visible = false;
     previewDots.visible = false;
-    previewEndRing.visible = false;
     state.previewOutcome = 'none';
     state.previewEnd = null;
     return;
   }
   // Preview follows the level clock: moving planets shift the shot.
   // Shield state matters too: a cracked shield previews as one hit away.
-  const sim = previewShot(level, state.aimAngle, state.aimPower, state.collected, levelTime, state.shieldHits);
-  const outcome = sim.outcome === 'collected' || sim.outcome === 'partial' ? 'collect'
-    : sim.outcome === 'crash' ? 'crash'
-    : sim.outcome === 'swallowed' ? 'swallowed'
-    : 'lost';
-  state.previewOutcome = outcome;
-  state.previewEnd = sim.end;
+  // The preview flies the active loadout (Block 2, #1-2), so an
+  // upgraded tank or stronger burn shows in the stub.
+  const sim = previewShot(level, state.aimAngle, state.aimPower, state.collected, levelTime, state.shieldHits, state.orbsCollected, activeLoadout(save));
+  state.previewOutcome = 'none';
+  state.previewEnd = null;
 
-  // Faint gold line for continuity.
-  const pts = sim.points.slice(0, PREVIEW_MAX);
+  // Trajectory STUB (v2, audit fix): only the first second of flight —
+  // enough to read the launch direction, never enough to know the
+  // outcome. The full path and the end marker were the oracle; both are
+  // gone. Preview points are recorded every 4th substep (30 per second).
+  const pts = sim.points.slice(0, Math.min(PREVIEW_MAX, 30));
   for (let i = 0; i < pts.length; i++) {
     previewPositions[i * 3] = pts[i][0];
     previewPositions[i * 3 + 1] = pts[i][1];
@@ -1620,11 +1842,6 @@ function updatePreview() {
   dotGeo.attributes.position.needsUpdate = true;
   dotGeo.attributes.color.needsUpdate = true;
   previewDots.visible = n > 1;
-
-  // Predicted-end marker, coloured by outcome, pulsing at the end point.
-  previewEndRing.position.set(sim.end.x, sim.end.y, 0);
-  previewEndRing.material.color.setHex(PREVIEW_END_COLORS[outcome]);
-  previewEndRing.visible = true;
 }
 
 const RIBBON_HEAD = new THREE.Color(0x22d3ee);
@@ -1800,6 +2017,16 @@ function beginLevel(level, mode) {
   state.zenCollected = 0;
   state.assistBonus = 0;
   state.assistCount = 0;
+  state.orbCount = 0;
+  state.orbsCollected = [];
+  state.thrustDir = null;
+  state.thrustKeys.clear();
+  state.pointerThrust = null;
+  state.testThrust = null; // a test steering override never leaks into the next shot
+  state.thrustBurning = false;
+  state.fastForward = false;
+  state.shotCollectedCount = 0;
+  lastFuelPct = -1;
   state.stars = mode === 'campaign' ? (save.stars[level.id] || 0)
     : mode === 'zen' ? 0 : challengeBest(mode);
   state.targetsRemaining = level.targets.length;
@@ -1817,7 +2044,7 @@ function beginLevel(level, mode) {
     ? 'Zen Sandbox — unlimited shots. Collect stars; they drift back onto the field. No fail state, just flow.'
     : `Level ${level.id} — ${level.name}. Par ${level.par}, ${level.targets.length} target${level.targets.length === 1 ? '' : 's'}, ${state.shotsLeft} shots.`);
   $('hud').classList.remove('hidden');
-  showOnly(null);
+  showOverlay(null);
   // A hidden button keeps its focus in some browsers; drop it so the
   // keyboard shortcuts (Space to launch, arrows to aim) own the keys.
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
@@ -1919,21 +2146,43 @@ function launch() {
   if (state.phase !== 'aim' || flightEnding) return;
   const level = levelById(state.levelId);
   // The flight carries the attempt's shield state: a target cracked by
-  // an earlier shot is one hit from collecting on this one.
-  flight = launchState(level, state.aimAngle, state.aimPower, levelTime, state.shieldHits);
+  // an earlier shot is one hit from collecting on this one — and the
+  // orbs already banked this attempt, so a later shot cannot farm them.
+  // Ship upgrades (Block 2, #1-2): the flight flies the save's active
+  // loadout — an equipped, unlocked upgrade changes this shot's tank
+  // and burn force. Boost pads (Block 2, #3) re-arm every shot: a pad
+  // spent on the last shot is live again, so its mesh comes back.
+  flight = launchState(level, state.aimAngle, state.aimPower, levelTime, state.shieldHits, state.orbsCollected, activeLoadout(save));
+  for (const pad of boostPadMeshes) {
+    pad.disc.visible = true;
+    pad.ring.visible = true;
+  }
   flightAcc = 0;
   flightEnding = false;
   slingshotCount = 0;
   peakTrauma = 0;
   portalCount = 0;
   bounceCount = 0;
+  boostCount = 0;
   shieldHitCount = 0;
   slowMoCount = 0;
+  // Shots are counted AT LAUNCH (audit fix): the old code counted at
+  // shot end, so the HUD lagged one behind for the whole flight.
+  state.shotsUsed++;
+  state.shotsLeft = Math.max(0, shotBudget(level) - state.shotsUsed);
+  state.thrustDir = null;
+  state.thrustKeys.clear();
+  state.pointerThrust = null;
+  state.testThrust = null; // a test steering override never leaks into the next shot
+  state.thrustBurning = false;
+  state.fastForward = false;
+  state.shotCollectedCount = 0;
+  lastFuelPct = -1;
   state.phase = 'fly';
   previewLine.visible = false;
   previewDots.visible = false;
-  previewEndRing.visible = false;
   trailLine.visible = false;
+  updateHUD();
   updatePowerMeter();
   hideAimReadout();
   feedback('launch', level.pad.x, level.pad.y);
@@ -1948,8 +2197,22 @@ function scheduleEndShot(ms) {
 function endShot() {
   if (state.phase !== 'fly') return;
   const level = levelById(state.levelId);
-  state.shotsUsed++;
-  state.shotsLeft = Math.max(0, shotBudget(level) - state.shotsUsed);
+  state.fastForward = false;
+  // shotsUsed was already counted at launch (audit fix) — endShot only
+  // re-derives shotsLeft for safety.
+  // Orbs banked on the same substep as the shot-ending event (#12): the
+  // physics marked them collected but no 'orb' event fired, so sync them
+  // here — hide the mesh and bank the points — before the flight is gone.
+  if (flight) {
+    for (const idx of flight.orbsCollected) {
+      if (state.orbsCollected.includes(idx)) continue;
+      state.orbsCollected.push(idx);
+      state.orbCount++;
+      state.assistBonus += orbPoints(levelOrbs(level)[idx]);
+      const mesh = orbMeshes[idx];
+      if (mesh) mesh.visible = false;
+    }
+  }
   flight = null;
   flightEnding = false;
   // Zen never completes or fails: the shot budget is infinite and the
@@ -2041,15 +2304,18 @@ function completeLevel() {
   }
   $('complete-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
   let shotsLine = `Finished in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'} (par ${level.par})`;
-  // Gravity-assist bonus (#4) on the complete screen: what this attempt
-  // banked, and the saved best for campaign levels.
+  // Bonus (#4 + #12) on the complete screen: what this attempt banked
+  // (slingshots + orbs), and the saved best for campaign levels.
   const completeBonusEl = $('complete-bonus');
   const bestBonus = state.mode === 'campaign'
     ? ((save.bestBonus && save.bestBonus[state.levelId]) || 0) : 0;
+  const bonusParts = [];
+  if (state.assistCount > 0) bonusParts.push(`${state.assistCount} slingshot${state.assistCount === 1 ? '' : 's'}`);
+  if (state.orbCount > 0) bonusParts.push(`${state.orbCount} orb${state.orbCount === 1 ? '' : 's'}`);
   completeBonusEl.textContent = state.assistBonus > 0
-    ? `Gravity-assist bonus: +${state.assistBonus} (${state.assistCount} slingshot${state.assistCount === 1 ? '' : 's'})`
+    ? `Bonus: +${state.assistBonus} (${bonusParts.join(', ')})`
       + (state.mode === 'campaign' ? ` · Best +${bestBonus}` : '')
-    : 'No gravity-assist bonus this run — skim a planet to earn +100 per slingshot.';
+    : 'No bonus this run — skim a planet for +100 per slingshot, or fly through a gold orb for +50.';
   announce(`Level complete — ${stars} star${stars === 1 ? '' : 's'} in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'}.`);
   if (state.mode === 'daily' && save.daily) {
     shotsLine += ` · Daily best: ${'★'.repeat(save.daily.stars)}${'☆'.repeat(3 - save.daily.stars)}`;
@@ -2087,7 +2353,7 @@ function completeLevel() {
   }
   updateHUD();
   renderLevelSelect();
-  showOnly('complete');
+  showOverlay('complete');
 }
 
 function failLevel(reason) {
@@ -2128,7 +2394,7 @@ function failLevel(reason) {
   }
   $('failed-stats').textContent = statsLine;
   updateHUD();
-  showOnly('failed');
+  showOverlay('failed');
 }
 
 function quitToMenu() {
@@ -2141,29 +2407,38 @@ function quitToMenu() {
   flight = null;
   flightEnding = false;
   state.phase = 'menu';
+  // The menu backdrop is the Level 1 scene: the attract comet orbits its
+  // first planet behind the panel (v2 — the menu IS the game). The
+  // attempt state resets so the backdrop shows every orb.
+  state.orbsCollected = [];
+  state.orbCount = 0;
+  state.assistBonus = 0;
+  state.levelId = 1;
+  buildLevelMeshes(LEVELS[0]);
+  trailHistory = [];
+  updateTrailLine();
   comet.visible = false;
   previewLine.visible = false;
   previewDots.visible = false;
-  previewEndRing.visible = false;
   trailLine.visible = false;
   updatePowerMeter();
   hideAimReadout();
   $('hud').classList.add('hidden');
   renderLevelSelect();
-  showOnly('menu');
+  showOverlay('menu');
 }
 
 function pauseGame() {
   if (state.phase !== 'aim' && state.phase !== 'fly') return;
   state.phaseBeforePause = state.phase;
   state.phase = 'paused';
-  showOnly('pause');
+  showOverlay('pause');
 }
 
 function resumeGame() {
   if (state.phase !== 'paused') return;
   state.phase = state.phaseBeforePause;
-  showOnly(null);
+  showOverlay(null);
   if (state.phase === 'aim') setAim(state.aimAngle, state.aimPower);
 }
 
@@ -2188,6 +2463,32 @@ function respawnZenTarget(level, idx) {
   zenRespawnTimers.push(timer);
 }
 
+// The current thrust direction for this substep (v2): the test override
+// wins (bot harness), then the held pointer (steer toward it), then the
+// held WASD/arrow keys. Returns a unit vector or null for coasting.
+function currentThrustDir() {
+  if (state.testThrust) return state.testThrust;
+  if (state.pointerThrust && flight) {
+    const dx = state.pointerThrust.x - flight.x;
+    const dy = state.pointerThrust.y - flight.y;
+    const len = Math.hypot(dx, dy);
+    if (len > 0.5) return { x: dx / len, y: dy / len };
+    return null;
+  }
+  const k = state.thrustKeys;
+  if (!k || k.size === 0) return null;
+  let x = 0, y = 0;
+  if (k.has('w') || k.has('up')) y += 1;
+  if (k.has('s') || k.has('down')) y -= 1;
+  if (k.has('a') || k.has('left')) x -= 1;
+  if (k.has('d') || k.has('right')) x += 1;
+  const len = Math.hypot(x, y);
+  if (len === 0) return null;
+  return { x: x / len, y: y / len };
+}
+
+let lastThrustSfxAt = 0;
+let thrustParticleTick = 0;
 function stepFlightLoop(dt) {
   if (!flight) return;
   flightAcc += dt;
@@ -2198,7 +2499,32 @@ function stepFlightLoop(dt) {
     levelTime += SUBSTEP; // level clock stays in lockstep with flight time
     tmpNewly.length = 0;
     const level = levelById(state.levelId);
-    const ev = stepFlight(flight, level, SUBSTEP, state.collected, tmpNewly);
+    // Mid-flight thrust (v2): the steering direction for this substep.
+    // The physics burns fuel and accelerates the comet; the game adds
+    // the flame particles and the burn sound here.
+    const thrust = currentThrustDir();
+    const fuelBefore = flight.fuel;
+    const ev = stepFlight(flight, level, SUBSTEP, state.collected, tmpNewly, thrust);
+    const burning = !!thrust && flight.fuel < fuelBefore;
+    if (burning) {
+      if (!state.thrustBurning) {
+        state.thrustBurning = true;
+        feedback('thrust', flight.x, flight.y);
+      }
+      // Flame: a cyan burst behind the comet, opposite the burn, plus a
+      // throttled burn whoosh so a long hold doesn't spam the SFX bus.
+      thrustParticleTick++;
+      if (thrustParticleTick % 3 === 0) {
+        spawnBurst(flight.x - thrust.x * 0.8, flight.y - thrust.y * 0.8, 0, 0x22d3ee, 3, 2, 0.3);
+      }
+      const now = performance.now();
+      if (now - lastThrustSfxAt > 150) {
+        lastThrustSfxAt = now;
+        sfx.thrust();
+      }
+    } else {
+      state.thrustBurning = false;
+    }
     comet.position.set(flight.x, flight.y, 0);
     // Near-miss slingshot: skim within the band of a planet's surface
     // (close enough to feel the bend, far enough to live) — once per
@@ -2220,6 +2546,43 @@ function stepFlightLoop(dt) {
       updateTrailLine();
     } else if (ev && ev.type === 'bounce') {
       feedback('bounce', flight.x, flight.y);
+    } else if (ev && ev.type === 'boost') {
+      // Boost pad (Block 2, #3): the physics already refilled the tank
+      // and kicked the speed — hide the spent pad for this shot (it
+      // re-arms on the next launch) and let the player know why the
+      // comet just surged.
+      for (const idx of ev.targets) {
+        const pad = boostPadMeshes[idx];
+        if (pad) {
+          pad.disc.visible = false;
+          pad.ring.visible = false;
+        }
+      }
+      feedback('boost', flight.x, flight.y);
+      updateHUD();
+      announce(`Boost pad — +${BOOST_PAD_REFILL} fuel and a speed kick.`);
+    } else if (ev && ev.type === 'orb') {
+      // Fuel orb (v2): bank its points into the attempt bonus, refill the
+      // tank (physics already added the fuel), hide the mesh, and remember
+      // it so a later shot cannot farm it again. Points are banked per
+      // orb (the event's points is the substep total, so two orbs in one
+      // substep must not double-count it).
+      const level = levelById(state.levelId);
+      let gained = 0;
+      for (const idx of ev.targets) {
+        if (state.orbsCollected.includes(idx)) continue;
+        state.orbsCollected.push(idx);
+        state.orbCount++;
+        const pts = orbPoints(levelOrbs(level)[idx]);
+        state.assistBonus += pts;
+        gained += pts;
+        const mesh = orbMeshes[idx];
+        if (mesh) mesh.visible = false;
+        const orb = levelOrbs(level)[idx];
+        if (orb) feedback('orb', orb.x, orb.y);
+      }
+      updateHUD();
+      if (gained > 0) announce(`Fuel orb collected — +${gained} bonus, +${FUEL_ORB_REFILL} fuel.`);
     } else if (ev && ev.type === 'shieldhit') {
       // The crack persists in the attempt's shield state, and the shield
       // ring on that target vanishes so one hit left reads at a glance.
@@ -2232,6 +2595,7 @@ function stepFlightLoop(dt) {
         feedback('shieldhit', pos.x, pos.y);
       }
     } else if (ev && ev.type === 'collect') {
+      state.shotCollectedCount += tmpNewly.length;
       for (const idx of tmpNewly) {
         const mesh = targetMeshes[idx];
         if (mesh) mesh.visible = false;
@@ -2279,10 +2643,17 @@ function stepFlightLoop(dt) {
       }
     } else if (ev && (ev.type === 'crash' || ev.type === 'lost' || ev.type === 'timeout' || ev.type === 'swallowed' || ev.type === 'invalid')) {
       flightEnding = true;
-      announce(ev.type === 'crash' ? 'Comet crashed into a planet — shot lost.'
-        : ev.type === 'swallowed' ? 'Comet swallowed by a black hole — shot lost.'
-        : ev.type === 'timeout' ? 'Comet ran out of steam — shot lost.'
-        : 'Comet flew out of bounds — shot lost.');
+      // Audit fix: a shot that collected a target is not "lost" — the
+      // old toast fired "flew out of bounds" even after a collect. Say
+      // so only when the shot collected nothing.
+      if (state.shotCollectedCount === 0) {
+        announce(ev.type === 'crash' ? 'Comet crashed into a planet — shot lost.'
+          : ev.type === 'swallowed' ? 'Comet swallowed by a black hole — shot lost.'
+          : ev.type === 'timeout' ? 'Comet ran out of steam — shot lost.'
+          : 'Comet flew out of bounds — shot lost.');
+      } else {
+        announce(`Star collected — shot over with ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left.`);
+      }
       if (ev.type === 'crash') {
         feedback('crash', flight.x, flight.y);
         comet.visible = false;
@@ -2311,14 +2682,17 @@ const dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
 const ndc = new THREE.Vector2();
 let dragging = false;
 let dragPointerId = null;
-let lastDragDist = 0; // world units pulled; a plain click must not launch
-let dragStartDist = 0; // pull distance when the drag began (fine-aim anchor)
-// Tap-to-launch: the press point/time of the current drag. A press that
-// lifts within TAP_MAX_MS having moved under TAP_MAX_PX is a tap — it
-// launches with the current aim instead of re-aiming.
+let dragStartAngle = 0; // aim angle when the drag began (fine-aim anchor)
+// Thrust steering pointer (v2): the pointer held mid-flight steers the
+// comet toward its world position. Separate from the aim drag.
+let thrustPointerId = null;
+// The press point of the current drag (screen px). A tap is a press
+// that lifts where it started; a drag is a press that moved. The launch
+// guard measures the pointer's own displacement — never the distance
+// from the pad to the release point, which the settling camera can
+// inflate by ~13px and turn a plain tap into a phantom drag.
 let downX = 0;
 let downY = 0;
-let downTime = 0;
 // Pinch zoom: every live pointer on the canvas, by pointerId. Two live
 // pointers mean a pinch — the aim drag is cancelled and the finger
 // distance drives the camera zoom until one finger lifts.
@@ -2344,26 +2718,31 @@ function aimFromPointer(e) {
   const dx = p.x - level.pad.x;
   const dy = p.y - level.pad.y;
   const dist = Math.hypot(dx, dy);
-  lastDragDist = dist;
   if (dist < 0.4) return;
-  // Fine aim: hold Shift and the pull distance moves 4x slower around the
-  // point where the drag started, for small power tweaks.
+  // Aim and power are DECOUPLED (audit fix): the drag sets the ANGLE
+  // only — power lives on the slider and the arrow keys, so fine-tuning
+  // the angle never changes the power. Shift = fine aim: the angle moves
+  // 4x slower around where the drag started.
   state.fineAim = !!e.shiftKey;
-  const effDist = state.fineAim
-    ? dragStartDist + (dist - dragStartDist) * FINE_AIM_SCALE
-    : dist;
-  const angle = Math.atan2(-dy, -dx);
-  const power = Math.max(0.05, Math.min(1, effDist / MAX_DRAG));
-  setAim(angle, power);
+  const rawAngle = Math.atan2(-dy, -dx);
+  const angle = state.fineAim
+    ? dragStartAngle + (rawAngle - dragStartAngle) * FINE_AIM_SCALE
+    : rawAngle;
+  setAim(angle, state.aimPower);
 }
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
-  if (state.phase !== 'aim') return;
+  // Both aim and flight take the pointer: aim drags to aim, flight holds
+  // to steer the comet toward the pointer (mid-flight thrust).
+  if (state.phase !== 'aim' && state.phase !== 'fly') return;
   ensureAudio();
   activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (activePointers.size === 2) {
-    // Second finger down: pinch-zoom takes over, the aim drag is off.
+    // Second finger down: pinch-zoom takes over, the aim drag / thrust
+    // steer is off.
     dragging = false;
+    state.pointerThrust = null;
+    thrustPointerId = null;
     pinching = true;
     const [a, b] = [...activePointers.values()];
     pinchStartDist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -2371,19 +2750,24 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     return;
   }
   if (activePointers.size > 2) return; // ignore extra fingers
+  if (state.phase === 'fly') {
+    // Hold to steer: the comet burns toward the held pointer position.
+    thrustPointerId = e.pointerId;
+    const p = worldFromEvent(e);
+    if (p) state.pointerThrust = { x: p.x, y: p.y };
+    try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* no active pointer */ }
+    return;
+  }
   dragging = true;
   dragPointerId = e.pointerId;
   downX = e.clientX;
   downY = e.clientY;
-  downTime = performance.now();
   // Synthetic pointer events (tests) have no active pointer to capture;
   // a failed capture must never break the drag.
   try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* no active pointer */ }
-  const level = levelById(state.levelId);
-  const p = worldFromEvent(e);
-  dragStartDist = p ? Math.hypot(p.x - level.pad.x, p.y - level.pad.y) : 0;
+  dragStartAngle = state.aimAngle;
   // Aim updates on the first move, not on press — so a tap never re-aims
-  // before it launches with the current aim.
+  // before it lifts.
 });
 renderer.domElement.addEventListener('pointermove', (e) => {
   if (!activePointers.has(e.pointerId)) return;
@@ -2394,6 +2778,12 @@ renderer.domElement.addEventListener('pointermove', (e) => {
     if (pinchStartDist > 0 && d > 0) setZoom(pinchStartZoom * (d / pinchStartDist));
     return;
   }
+  // Mid-flight steer: the held pointer is the thrust target.
+  if (state.phase === 'fly' && e.pointerId === thrustPointerId) {
+    const p = worldFromEvent(e);
+    if (p) state.pointerThrust = { x: p.x, y: p.y };
+    return;
+  }
   if (!dragging || e.pointerId !== dragPointerId || state.phase !== 'aim') return;
   aimFromPointer(e);
 });
@@ -2402,25 +2792,32 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   activePointers.delete(e.pointerId);
   if (activePointers.size < 2) pinching = false;
   // A pinch ending never launches — lifting a finger is not a shot.
-  if (wasPinching) { dragging = false; return; }
+  if (wasPinching) { dragging = false; state.pointerThrust = null; thrustPointerId = null; return; }
+  // Releasing the steering pointer stops the burn.
+  if (e.pointerId === thrustPointerId) {
+    state.pointerThrust = null;
+    thrustPointerId = null;
+    return;
+  }
   if (!dragging || e.pointerId !== dragPointerId) return;
   dragging = false;
   state.fineAim = false;
   if (state.phase !== 'aim') return;
-  // Quick tap, barely moved: launch with the current aim.
-  const duration = performance.now() - downTime;
-  const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
-  if (isTapGesture(duration, moved)) {
-    launch();
-    return;
-  }
+  // NO tap-to-launch (audit fix): a plain click never launches — the
+  // old Level 1 was solvable by clicking the orb with zero dragging.
+  // Only a real drag (the pointer moved 12+ screen px from where it
+  // went down) releases a shot. A tap lifts in place, so it neither
+  // re-aims nor launches.
+  const draggedPx = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (draggedPx < 12) return;
   aimFromPointer(e);
-  if (lastDragDist >= 1.5 && state.aimPower >= 0.08) launch();
+  if (state.aimPower >= 0.08) launch();
 });
 renderer.domElement.addEventListener('pointercancel', (e) => {
   activePointers.delete(e.pointerId);
   if (activePointers.size < 2) pinching = false;
   if (e.pointerId === dragPointerId) dragging = false;
+  if (e.pointerId === thrustPointerId) { state.pointerThrust = null; thrustPointerId = null; }
 });
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 // Mouse wheel zooms the camera in and out (zoom buttons and pinch do the
@@ -2490,15 +2887,42 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
+  // Space mid-flight toggles fast-forward (skip the dead drift — audit
+  // fix); Space while aiming still launches (handled below).
+  if (e.key === ' ' && state.phase === 'fly') {
+    state.fastForward = !state.fastForward;
+    updateSkipButton();
+    e.preventDefault();
+    return;
+  }
+  // WASD / arrows mid-flight steer the comet (thrust). Keyup releases them.
+  if (state.phase === 'fly'
+    && ['w', 'a', 's', 'd', 'W', 'A', 'S', 'D', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+    state.thrustKeys.add(e.key.toLowerCase().replace('arrow', ''));
+    e.preventDefault();
+    return;
+  }
   if (state.phase !== 'aim') return;
-  // Shift = fine aim: quarter-size angle/power steps for keyboard aim too.
+  // Shift = fine aim: 0.1° angle steps (0.02° with Shift) and 1% power
+  // steps — the audit's Level 3 needed ~1° precision the old 3.4° steps
+  // could never deliver. Aim and power are decoupled: arrows adjust one
+  // variable at a time, never both.
   state.fineAim = !!e.shiftKey;
-  const fine = e.shiftKey ? 0.25 : 1;
-  if (e.key === 'ArrowLeft') { setAim(state.aimAngle + 0.06 * fine, state.aimPower); e.preventDefault(); }
-  else if (e.key === 'ArrowRight') { setAim(state.aimAngle - 0.06 * fine, state.aimPower); e.preventDefault(); }
-  else if (e.key === 'ArrowUp') { setAim(state.aimAngle, state.aimPower + 0.05 * fine); e.preventDefault(); }
-  else if (e.key === 'ArrowDown') { setAim(state.aimAngle, state.aimPower - 0.05 * fine); e.preventDefault(); }
+  const angleStep = e.shiftKey ? 0.0004 : 0.002;
+  const powerStep = e.shiftKey ? 0.01 : 0.05;
+  if (e.key === 'ArrowLeft') { setAim(state.aimAngle + angleStep, state.aimPower); e.preventDefault(); }
+  else if (e.key === 'ArrowRight') { setAim(state.aimAngle - angleStep, state.aimPower); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { setAim(state.aimAngle, state.aimPower + powerStep); e.preventDefault(); }
+  else if (e.key === 'ArrowDown') { setAim(state.aimAngle, state.aimPower - powerStep); e.preventDefault(); }
   else if (e.key === ' ') { launch(); e.preventDefault(); }
+});
+
+// Releasing a thrust key stops that burn direction; releasing the last
+// held key stops the burn entirely.
+window.addEventListener('keyup', (e) => {
+  if (['w', 'a', 's', 'd', 'W', 'A', 'S', 'D', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+    state.thrustKeys.delete(e.key.toLowerCase().replace('arrow', ''));
+  }
 });
 
 // ---------------------------------------------------------------- buttons
@@ -2509,8 +2933,7 @@ function wireButtons() {
     if (!save.seenHowTo) {
       save.seenHowTo = true;
       persistSave();
-      state.phase = 'howto';
-      showOnly('howto');
+      openScreen('howto');
       return;
     }
     const next = LEVELS.find((l) => l.id <= save.unlocked && (save.stars[l.id] || 0) < 3)
@@ -2520,20 +2943,17 @@ function wireButtons() {
   $('btn-howto').addEventListener('click', () => {
     ensureAudio();
     sfx.click();
-    state.phase = 'howto';
-    showOnly('howto');
+    openScreen('howto');
   });
   $('btn-stats').addEventListener('click', () => {
     ensureAudio();
     sfx.click();
     renderStats();
-    state.phase = 'stats';
-    showOnly('stats');
+    openScreen('stats');
   });
   $('btn-stats-close').addEventListener('click', () => {
     sfx.click();
-    state.phase = 'menu';
-    showOnly('menu');
+    closeScreen();
   });
   // Achievements overlay (Block 16): the menu button opens the list,
   // the close button returns to the menu.
@@ -2541,13 +2961,11 @@ function wireButtons() {
     ensureAudio();
     sfx.click();
     renderAchievements();
-    state.phase = 'achievements';
-    showOnly('achievements');
+    openScreen('achievements');
   });
   $('btn-achievements-close').addEventListener('click', () => {
     sfx.click();
-    state.phase = 'menu';
-    showOnly('menu');
+    closeScreen();
   });
   // Reset Progress (Block 16, #48): first click arms the button, the
   // second click within 5s wipes the whole save.
@@ -2577,8 +2995,7 @@ function wireButtons() {
       startSeed(urlSeedRaw);
       return;
     }
-    state.phase = 'menu';
-    showOnly('menu');
+    closeScreen();
   });
   $('btn-next').addEventListener('click', () => {
     ensureAudio();
@@ -2616,46 +3033,54 @@ function wireButtons() {
   });
   $('btn-quit').addEventListener('click', () => { sfx.click(); quitToMenu(); });
   $('btn-pause').addEventListener('click', () => { sfx.click(); pauseGame(); });
-  // Challenge modes: daily (one level per day), endless (escalating
-  // rounds), and a seed box — type a seed or open a ?seed= link to replay
-  // the exact same generated level as a friend.
-  $('btn-daily').addEventListener('click', () => {
-    ensureAudio();
-    sfx.click();
-    startDaily();
-  });
-  $('btn-endless').addEventListener('click', () => {
-    ensureAudio();
-    sfx.click();
-    startEndless();
-  });
-  // Time Attack: one 4:00 clock across levels 1-5.
-  $('btn-timeattack').addEventListener('click', () => {
-    ensureAudio();
-    sfx.click();
-    startTimeAttack();
-  });
-  // Zen Sandbox (#21): free orbit playground, unlimited shots.
-  $('btn-zen').addEventListener('click', () => {
-    ensureAudio();
-    sfx.click();
-    startZen();
-  });
-  $('btn-seed').addEventListener('click', () => {
-    ensureAudio();
-    if (startSeed($('seed-input').value)) {
-      sfx.click();
-    } else {
-      $('seed-input').focus();
-      $('seed-input').placeholder = 'Type a seed first';
-    }
-  });
-  $('seed-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') $('btn-seed').click();
-  });
+  // Challenge modes (daily / endless / time attack / zen) are DORMANT in
+  // v2 Block 1 — the menu shows no buttons for them until their blocks
+  // rebuild them for thrust (backlog #44-47). The mode code still works
+  // via ?seed= links and the __orbit hooks; no dead buttons on screen.
   $('btn-mute-menu').addEventListener('click', () => { ensureAudio(); toggleMute(); });
   $('btn-mute-hud').addEventListener('click', () => { ensureAudio(); toggleMute(); });
   $('btn-mute-pause').addEventListener('click', () => { ensureAudio(); toggleMute(); });
+  // Power slider (v2, audit fix): the adjustable power control — drag
+  // sets angle, this slider (and the arrow keys) set power.
+  const powerRange = $('power-range');
+  if (powerRange) {
+    powerRange.addEventListener('input', () => {
+      ensureAudio();
+      if (state.phase === 'aim') setAim(state.aimAngle, Number(powerRange.value) / 100);
+    });
+  }
+  // Launch button (v2): the touch/mouse alternative to drag-release and
+  // Space — visible while aiming. A tap never launches by itself (audit
+  // fix); this button is the deliberate way to fire.
+  const launchBtn = $('btn-launch');
+  if (launchBtn) {
+    launchBtn.addEventListener('click', () => { ensureAudio(); launch(); });
+  }
+  // Skip / fast-forward button (v2, audit fix): visible mid-flight,
+  // toggles the 3x fast-forward (Space does the same on keyboard).
+  const skipBtn = $('btn-skip');
+  if (skipBtn) {
+    skipBtn.addEventListener('click', () => {
+      ensureAudio();
+      state.fastForward = !state.fastForward;
+      updateSkipButton();
+    });
+  }
+  // Hover tick (v2 menu juice): every button plays the small-tier tick
+  // on hover and pops via CSS. Delegated so dynamically built level
+  // buttons get it too; the tick only fires when the hovered button
+  // actually changes, and only once audio is running.
+  let lastTickedBtn = null;
+  document.addEventListener('mouseover', (e) => {
+    const btn = e.target && e.target.closest
+      ? e.target.closest('.btn, .level-btn, .icon-btn') : null;
+    if (btn && btn !== lastTickedBtn) {
+      lastTickedBtn = btn;
+      if (audioCtx && !settings.muted && settings.sfx) sfx.tick();
+    } else if (!btn) {
+      lastTickedBtn = null;
+    }
+  });
   // Camera zoom (HUD − / + buttons; wheel, pinch and the + / - keys do
   // the same thing). Each tap steps 25% in or out.
   $('btn-zoom-in').addEventListener('click', () => { ensureAudio(); sfx.click(); setZoom(cameraZoom * 1.25); });
@@ -2728,18 +3153,72 @@ function wireButtons() {
 }
 
 // ---------------------------------------------------------------- resize + context loss
+// fittedZ is the distance that frames the whole playfield at the current
+// aspect (v2): updateCamera owns the camera position, fitCamera only
+// recomputes the fit and the renderer size.
+let fittedZ = 54;
 function fitCamera() {
   const aspect = window.innerWidth / window.innerHeight;
   camera.aspect = aspect;
   const halfFovTan = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
   const need = PLAYFIELD_RADIUS + 2;
   // Zoom in (factor > 1) pulls the camera closer than the fitted distance.
-  const z = Math.max(need / halfFovTan, need / (halfFovTan * aspect)) / cameraZoom;
-  camera.position.set(0, 0, z);
+  fittedZ = Math.max(need / halfFovTan, need / (halfFovTan * aspect)) / cameraZoom;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 }
 window.addEventListener('resize', fitCamera);
+
+// Attract-mode clock (v2 menu): the demo comet's orbit angle and the
+// slow menu-camera drift both read this.
+let attractT = 0;
+const camTarget = new THREE.Vector3(0, 0, 0);
+// Follow camera (v2): the camera is a smoothed follower, not a fixed
+// top-down view. Aim frames the whole field with a slight tilt (real
+// depth); flight follows the comet, closer and tilted; the menu orbits
+// slowly. Complete / failed / paused hold the current framing. Shake
+// still rides on the rig, never on this position.
+function updateCamera(dt) {
+  const desired = new THREE.Vector3();
+  const look = new THREE.Vector3();
+  if (state.phase === 'fly' && flight) {
+    const fz = (fittedZ * 0.62) / cameraZoom;
+    desired.set(flight.x * 0.6, flight.y * 0.6 + 10, fz);
+    look.set(flight.x, flight.y, 0);
+  } else if (state.phase === 'aim') {
+    desired.set(0, 10, fittedZ * 0.94);
+    look.set(0, 0, 0);
+  } else if (['menu', 'howto', 'stats', 'achievements'].includes(state.phase)) {
+    const a = attractT * 0.08;
+    desired.set(Math.sin(a) * 18, 12 + Math.sin(attractT * 0.05) * 3, 42);
+    look.set(0, 0, 0);
+  } else {
+    return;
+  }
+  const k = 1 - Math.exp(-dt * 4);
+  camera.position.lerp(desired, k);
+  camTarget.lerp(look, k);
+  camera.lookAt(camTarget);
+}
+
+// Attract scene (v2 menu): a demo comet orbits the first planet of the
+// menu backdrop level, with a live trail — the menu IS the game, never a
+// flat panel over darkness. The orbit is wide (8.5 x 6.8) so the comet
+// sweeps past the panel's edges instead of hiding behind its centre.
+function updateAttract(dt) {
+  attractT += dt;
+  const level = LEVELS[0];
+  const p = level.planets[0];
+  const a = attractT * 0.5;
+  const x = p.x + Math.cos(a) * 8.5;
+  const y = p.y + Math.sin(a) * 6.8;
+  comet.position.set(x, y, 0);
+  comet.visible = true;
+  comet.rotation.y += dt * 3;
+  trailHistory.push([x, y]);
+  if (trailHistory.length > TRAIL_MAX) trailHistory.shift();
+  updateTrailLine();
+}
 
 renderer.domElement.addEventListener('webglcontextlost', (e) => {
   e.preventDefault();
@@ -2822,23 +3301,23 @@ function animate(now) {
     shake * 0.9 * Math.sin(t * 39.7 + 1.3),
     0,
   );
-  camera.lookAt(0, 0, 0);
-  // Predicted-end marker pulses while aiming so the predicted outcome reads.
-  // Reduce motion holds it steady — the ring itself still shows the outcome.
-  if (previewEndRing.visible) {
-    const s = settings.reduceMotion ? 1 : 1 + 0.18 * Math.sin(t * 6);
-    previewEndRing.scale.setScalar(s);
-  }
   if (!stopped) {
     // Near-miss slow-mo (#31): while the dip is live the whole simulation
     // runs at SLOW_MO_SCALE (0.35x) — flight, particles, planet motion —
     // while trauma decay, the nebula and the Time Attack clock below stay
     // on real time. slowMoScale returns 1 outside the window, under
     // reduce motion, or on a corrupted clock, so this can never stick.
-    const sdt = dt * slowMoScale(now, slowMoUntil, settings.reduceMotion);
+    // Fast-forward (v2 Skip / Space mid-flight) multiplies the sim by 3.
+    const ff = state.fastForward && state.phase === 'fly' ? 3 : 1;
+    const sdt = dt * slowMoScale(now, slowMoUntil, settings.reduceMotion) * ff;
     updateParticles(sdt);
     updateShockwaves(sdt);
     updateConfetti(sdt);
+    // The menu IS the game (v2): a live attract scene runs behind every
+    // menu screen — orbiting demo comet, nebula, planets.
+    if (['menu', 'howto', 'stats', 'achievements'].includes(state.phase)) {
+      updateAttract(sdt);
+    }
     const level = levelById(state.levelId);
     if (level) {
       // The level clock runs while aiming; during flight it advances in
@@ -2892,6 +3371,21 @@ function animate(now) {
         m.rotation.y += sdt * 0.8;
         m.rotation.x += sdt * 0.4;
       });
+      // Trail orbs (#12) spin and pulse so they read as pickups, not
+      // scenery; collected ones are hidden and skipped.
+      orbMeshes.forEach((m, i) => {
+        if (!m.visible) return;
+        m.rotation.y += sdt * 1.6;
+        m.rotation.x += sdt * 0.9;
+        m.scale.setScalar(0.55 * (1 + 0.15 * Math.sin(now * 0.005 + i * 2.1)));
+      });
+      // Boost pads (Block 2, #3) breathe — their rings pulse so the fast
+      // line reads from across the field; spent pads are hidden.
+      boostPadMeshes.forEach((pad, i) => {
+        if (!pad.disc.visible) return;
+        const pulse = 1 + 0.08 * Math.sin(now * 0.004 + i * 1.9);
+        pad.ring.scale.setScalar(boostPadRadius(levelBoostPads(level)[i]) * pulse);
+      });
       targetRings.forEach((ring, i) => {
         if (!ring.visible) return;
         ring.rotation.z += sdt * 0.5;
@@ -2905,8 +3399,10 @@ function animate(now) {
         updateTrailLine();
         comet.rotation.y += sdt * 3;
       }
+      updateFuelBar();
     }
   }
+  updateCamera(dt);
   renderer.render(scene, camera);
 }
 
@@ -2916,6 +3412,43 @@ window.__orbit = {
   threeVersion: THREE_VERSION,
   state,
   selectLevel: (id) => { ensureAudio(); startLevel(id); },
+  // Test-only: unlock the whole campaign so the render check can drive
+  // any level without playing through the unlocks first.
+  unlockAll: () => { save.unlocked = LEVELS.length; persistSave(); renderLevelSelect(); },
+  // Ship upgrades (Block 2, #1-2): the render check drives the upgrade
+  // flow through these — read the state, equip (gated on unlock, like
+  // the UI), and grant stars so the unlock thresholds are reachable
+  // without playing the campaign first.
+  upgrades: () => UPGRADES.map((u) => ({
+    ...u,
+    unlocked: upgradeUnlocked(u.id, totalStars(save)),
+    equipped: !!(save.upgrades && save.upgrades[u.id]),
+    totalStars: totalStars(save),
+  })),
+  setUpgrade: (id, on) => {
+    if (!upgradeById(id) || !upgradeUnlocked(id, totalStars(save))) return false;
+    if (!save.upgrades) save.upgrades = { thrust: false, tank: false };
+    save.upgrades[id] = !!on;
+    persistSave();
+    renderUpgrades();
+    updateHUD();
+    return true;
+  },
+  grantStars: (count) => {
+    // Grant `count` stars across the campaign (3 per level from level 1
+    // up) so upgrade unlocks can be tested; persists + re-renders.
+    let remaining = Math.max(0, Math.min(LEVELS.length * 3, count | 0));
+    for (const level of LEVELS) {
+      if (remaining <= 0) break;
+      const give = Math.min(3, remaining);
+      save.stars[level.id] = give;
+      remaining -= give;
+    }
+    save.unlocked = LEVELS.length;
+    persistSave();
+    renderLevelSelect();
+    return totalStars(save);
+  },
   aim: (angle, power) => { if (state.phase === 'aim') setAim(angle, power); },
   launch: () => launch(),
   // Camera zoom (Block 8): current factor and a clamped setter for the
@@ -2973,15 +3506,28 @@ window.__orbit = {
       movingTargets: level ? level.targets.filter((t) => t.orbit).length : 0,
       portals: level ? levelPortals(level).length : 0,
       bouncePads: level ? levelBouncePads(level).length : 0,
+      boostPads: level ? levelBoostPads(level).length : 0,
       shieldedTargets: level ? level.targets.filter((t) => targetHits(t) > 1).length : 0,
       shieldHits: { ...state.shieldHits },
       planetPositions: planetMeshes.map((m) => [m.position.x, m.position.y]),
       targetPositions: targetMeshes.map((m) => [m.position.x, m.position.y]),
     };
   },
-  // Live audio state for the render check: mute/volume, whether the
-  // music scheduler is running, the current intensity layer (0/1/2), and
-  // the most recently played SFX name.
+  // Live flight state for the render check: the comet's position and
+  // velocity mid-flight (null while aiming), so the check can prove
+  // thrust steers the comet off its ballistic arc. fuelMax / thrustAccel
+  // (Block 2, #1-2) prove the equipped loadout is flying.
+  flightState: () => flight ? {
+    x: flight.x, y: flight.y, vx: flight.vx, vy: flight.vy,
+    fuel: flight.fuel, fuelMax: flight.fuelMax, thrustAccel: flight.thrustAccel,
+    done: flight.done,
+  } : null,
+  // Screen position of a world point through the live camera, for the
+  // render check's real-mouse drag test.
+  worldToScreen: (x, y) => {
+    const v = new THREE.Vector3(x, y, 0).project(camera);
+    return { x: (v.x * 0.5 + 0.5) * window.innerWidth, y: (-v.y * 0.5 + 0.5) * window.innerHeight };
+  },
   audioState: () => ({
     audioReady: !!audioCtx,
     muted: settings.muted,
@@ -3105,6 +3651,52 @@ window.__orbit = {
     count: state.assistCount,
     best: { ...(save.bestBonus || {}) },
   }),
+  // Fuel orbs (v2) + mid-flight thrust state for the render check: how
+  // many orbs this attempt banked, which are gone, how many orb meshes
+  // are visible, and the live fuel tank. setThrust(x, y) is a test-only
+  // steering override (a unit-ish direction, or null to release); the
+  // render check uses it to prove thrust steers the comet.
+  orbState: () => {
+    const level = levelById(state.levelId);
+    return {
+      count: state.orbCount,
+      collected: [...state.orbsCollected],
+      total: level ? levelOrbs(level).length : 0,
+      visible: orbMeshes.filter((m) => m.visible).length,
+      bonus: state.assistBonus,
+    };
+  },
+  thrustState: () => ({
+    fuel: flight ? flight.fuel : FUEL_MAX,
+    fuelMax: FUEL_MAX,
+    burning: state.thrustBurning,
+    available: state.phase === 'fly' && !!flight && flight.fuel > 0,
+    fastForward: state.fastForward,
+  }),
+  setThrust: (x, y) => {
+    if (x === null || x === undefined) { state.testThrust = null; return true; }
+    if (typeof x !== 'number' || typeof y !== 'number'
+      || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const len = Math.hypot(x, y);
+    if (len < 0.01) { state.testThrust = null; return true; }
+    state.testThrust = { x: x / len, y: y / len };
+    return true;
+  },
+  // Thrust-aware solver for the current level (bot harness): the plan
+  // the greedy pursuit policy finds within par, or null. The render
+  // check plays the plan shot by shot. The plan flies the ACTIVE
+  // loadout (Block 2, #1-2): a plan computed for the base ship would
+  // not match a flight flown with Ion Thrusters / Big Tank equipped.
+  solveThrust: () => {
+    const level = levelById(state.levelId);
+    if (!level || state.phase !== 'aim') return null;
+    const plan = solveLevelThrust(level, level.par, {
+      shieldHits: state.shieldHits,
+      t0s: [levelTime, levelTime + 0.75, levelTime + 1.5],
+      loadout: activeLoadout(save),
+    });
+    return plan;
+  },
   // Achievements state (Block 16) for the render check: the unlocked
   // ids, the total, the lifetime stats and the save schema version.
   achievementsState: () => ({
@@ -3133,14 +3725,15 @@ window.__orbit = {
 
 // ---------------------------------------------------------------- init
 // A ?seed= link opens that exact generated level (after the how-to on a
-// first visit, so the link still works for a brand-new player).
+// first visit, so the link still works for a brand-new player). The seed
+// input left the menu in v2 (no dead controls), but ?seed= links keep
+// working.
 const urlSeedRaw = new URLSearchParams(window.location.search).get('seed');
 const pendingSeed = parseSeedParam(urlSeedRaw);
-if (pendingSeed !== null) {
-  const seedInput = $('seed-input');
-  if (seedInput) seedInput.value = String(urlSeedRaw).trim().slice(0, 32);
-}
-document.querySelector('.version').textContent = `v${VERSION} · Three.js ${THREE_VERSION}`;
+// No version text on player-facing screens, ever (v2): the version lives
+// in the README only. The menu backdrop is the Level 1 scene so the
+// attract comet orbits behind the panel from the first frame.
+buildLevelMeshes(LEVELS[0]);
 fitCamera();
 wireButtons();
 updateMuteLabels();
@@ -3148,11 +3741,11 @@ updateVolumeLabels();
 renderLevelSelect();
 if (!save.seenHowTo) {
   state.phase = 'howto';
-  showOnly('howto');
+  showOverlay('howto');
 } else if (pendingSeed !== null) {
   startSeed(urlSeedRaw);
 } else {
-  showOnly('menu');
+  showOverlay('menu');
 }
 // The state audit (Block 11, #47) runs once a second for the whole
 // session; it only acts while a level is running.

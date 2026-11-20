@@ -24,14 +24,20 @@
 <!-- HUD -->
 <div id="hud" class="hidden">
   <div class="hud-left">
-    <span id="hud-level">Level 1 — First Light</span>
+    <span id="hud-level">Level 1 — First Burn</span>
     <span id="hud-stars" class="hud-stars"></span>
   </div>
   <div class="hud-mid">
-    <span id="hud-par">Par 2</span>
-    <span id="hud-shots">Shots 0/2</span>
-    <span id="hud-targets">Targets 1 left</span>
+    <span id="hud-par">Par 1</span>
+    <span id="hud-shots">Shots 0/3</span>
+    <span id="hud-targets">Targets 2 left</span>
     <span id="hud-bonus" class="hud-bonus hidden">Bonus +0</span>
+    <span id="hud-upgrades" class="hud-upgrades hidden" aria-label="Equipped ship upgrades"></span>
+    <div id="hud-fuel" class="hud-fuel hidden" aria-label="Fuel tank">
+      <div id="fuel-fill"></div>
+      <span id="fuel-label">Fuel</span>
+    </div>
+    <button id="btn-skip" class="icon-btn hidden" type="button" aria-label="Skip ahead — fast-forward the flight">Skip »</button>
     <span id="hud-timer" class="hud-timer hidden">⏱ 4:00</span>
   </div>
   <div class="hud-right">
@@ -49,55 +55,63 @@
 <!-- Achievement unlock toast (Block 16): gold banner, pointer-events none
      so it can never block a click; the screen reader hears it via sr-status. -->
 <div id="achievement-toast" class="achievement-toast hidden"></div>
-<div id="power-meter" class="power-meter hidden" aria-label="Shot power">
-  <div id="power-fill"></div>
-  <span id="power-label">Power 60%</span>
+<div id="power-control" class="power-control hidden" aria-label="Shot power and launch">
+  <div class="power-meter">
+    <div id="power-fill"></div>
+    <span id="power-label">Power 60%</span>
+  </div>
+  <input id="power-range" type="range" min="5" max="100" value="60" aria-label="Shot power — drag sets the angle, this sets the power">
+  <button id="btn-launch" class="btn primary small" type="button">Launch</button>
 </div>
 
 <!-- Main menu -->
 <div id="menu" class="overlay">
-  <div class="panel">
+  <div class="panel panel-menu">
     <h1>NEON ORBIT</h1>
-    <p class="tagline">Slingshot your comet around planets. Collect every star.</p>
-    <p class="version">v0.17.0 &middot; Three.js 0.160.0</p>
-    <button id="btn-play" class="btn primary" type="button">Play</button>
-    <button id="btn-daily" class="btn" type="button">Daily Orbit</button>
-    <button id="btn-endless" class="btn" type="button">Endless Orbit</button>
-    <button id="btn-timeattack" class="btn" type="button">Time Attack — 5 levels, 4:00</button>
-    <button id="btn-zen" class="btn" type="button">Zen Sandbox — unlimited shots</button>
-    <div class="seed-row">
-      <input id="seed-input" type="text" maxlength="32" placeholder="Seed — try orbit42" aria-label="Seed for a generated level">
-      <button id="btn-seed" class="btn small" type="button">Play Seed</button>
+    <p class="tagline">Aim, launch — then steer your comet with thrust. Bend gravity. Collect every star.</p>
+    <div class="menu-col menu-actions">
+      <button id="btn-play" class="btn primary" type="button">Play</button>
+      <button id="btn-howto" class="btn" type="button">How to Play</button>
+      <button id="btn-stats" class="btn" type="button">My Stats</button>
+      <button id="btn-achievements" class="btn" type="button">Achievements</button>
+      <button id="btn-mute-menu" class="btn small" type="button">Sound: On</button>
+      <!-- Ship upgrades (Block 2, #1-2): earned with campaign stars,
+           toggled here. Locked upgrades show their star requirement;
+           unlocked ones equip / unequip with a tap. Lives in the
+           actions column: the setup column is already full at 720px,
+           and the actions column has the free space. -->
+      <div class="upgrades" aria-label="Ship upgrades">
+        <h3>Ship Upgrades</h3>
+        <div id="upgrades-list" class="upgrades-list"></div>
+      </div>
     </div>
-    <button id="btn-howto" class="btn" type="button">How to Play</button>
-    <button id="btn-stats" class="btn" type="button">My Stats</button>
-    <button id="btn-achievements" class="btn" type="button">Achievements</button>
-    <label class="slider-row">Volume
-      <input id="volume-range-menu" type="range" min="0" max="100" value="60" aria-label="Volume">
-      <span id="volume-value-menu">60%</span>
-    </label>
-    <label class="toggle-row">Reduce motion
-      <input id="reduce-motion-menu" type="checkbox" aria-label="Reduce motion — no screen shake or flashing effects">
-    </label>
-    <label class="toggle-row">Music
-      <input id="music-toggle-menu" type="checkbox" checked aria-label="Music on or off">
-    </label>
-    <label class="toggle-row">Sound effects
-      <input id="sfx-toggle-menu" type="checkbox" checked aria-label="Sound effects on or off">
-    </label>
-    <label class="toggle-row">Reduce flashing
-      <input id="reduce-flashing-menu" type="checkbox" aria-label="Reduce flashing — no crash flash or bright flashes">
-    </label>
-    <div class="style-row"><span>Music style</span>
-      <button id="btn-music-style-menu" class="btn small" type="button" aria-label="Cycle music style"><span id="music-style-label-menu">Nebula</span> ▸</button>
+    <div class="menu-col menu-setup">
+      <label class="slider-row">Volume
+        <input id="volume-range-menu" type="range" min="0" max="100" value="60" aria-label="Volume">
+        <span id="volume-value-menu">60%</span>
+      </label>
+      <label class="toggle-row">Reduce motion
+        <input id="reduce-motion-menu" type="checkbox" aria-label="Reduce motion — no screen shake or flashing effects">
+      </label>
+      <label class="toggle-row">Music
+        <input id="music-toggle-menu" type="checkbox" checked aria-label="Music on or off">
+      </label>
+      <label class="toggle-row">Sound effects
+        <input id="sfx-toggle-menu" type="checkbox" checked aria-label="Sound effects on or off">
+      </label>
+      <label class="toggle-row">Reduce flashing
+        <input id="reduce-flashing-menu" type="checkbox" aria-label="Reduce flashing — no crash flash or bright flashes">
+      </label>
+      <div class="style-row"><span>Music style</span>
+        <button id="btn-music-style-menu" class="btn small" type="button" aria-label="Cycle music style"><span id="music-style-label-menu">Nebula</span> ▸</button>
+      </div>
+      <div id="campaign-progress" class="campaign-progress" aria-label="Campaign progress">
+        <div class="campaign-progress-text"><span id="campaign-progress-label">Campaign — 0/6 cleared</span><span id="campaign-progress-stars">0 / 18 stars</span></div>
+        <div class="campaign-progress-bar"><div id="campaign-progress-fill"></div></div>
+      </div>
+      <div id="level-select" class="level-select" aria-label="Level select"></div>
+      <p class="total-stars">Total stars: <span id="total-stars">0</span> / 18</p>
     </div>
-    <div id="campaign-progress" class="campaign-progress" aria-label="Campaign progress">
-      <div class="campaign-progress-text"><span id="campaign-progress-label">Campaign — 0/12 cleared</span><span id="campaign-progress-stars">0 / 36 stars</span></div>
-      <div class="campaign-progress-bar"><div id="campaign-progress-fill"></div></div>
-    </div>
-    <div id="level-select" class="level-select" aria-label="Level select"></div>
-    <p class="total-stars">Total stars: <span id="total-stars">0</span> / 36</p>
-    <button id="btn-mute-menu" class="btn small" type="button">Sound: On</button>
   </div>
 </div>
 
@@ -106,29 +120,26 @@
   <div class="panel">
     <h2>How to Play</h2>
     <ul class="howto-list">
-      <li><strong>Drag</strong> back from the comet and <strong>release</strong> to launch it — like a slingshot. Or <strong>tap / click</strong> anywhere to launch with the current aim.</li>
-      <li>Planets <strong>bend</strong> your flight with gravity. Use the bend, don't fight it.</li>
-      <li>Collect <strong>every magenta target</strong> before you run out of shots.</li>
-      <li>Crashing into a planet or flying out of bounds <strong>loses the shot</strong>.</li>
-      <li><strong>Black holes</strong> pull hard and <strong>swallow</strong> comets that cross their event horizon — arc around them, never through them.</li>
-      <li>Skim close past a planet for a <strong>slingshot</strong> flash — time briefly slows so you can watch the bend — and watch the shockwave ring when you collect a star. Each slingshot pays a <strong>+100 gravity-assist bonus</strong>, shown in the HUD and on the level-complete screen.</li>
-      <li><strong>Moving planets</strong> orbit their centre (the faint ring shows the path). The trajectory preview follows them — time your launch for when the bend lines up.</li>
-      <li><strong>Portals</strong> come in matching pairs — fly into one and you exit its twin at the same speed. <strong>Shielded targets</strong> (white ring) take two hits: the first cracks the shield, the second collects the star. <strong>Bounce pads</strong> (lime) reflect the comet like a mirror.</li>
-      <li><strong>Moving targets</strong> drift on small orbits (the faint ring shows the path). Lead your shot so the comet meets the target, not where it was.</li>
-      <li><strong>Time Attack</strong> clears levels 1–5 against one 4:00 clock — every second counts, and the best full clear is saved.</li>
-      <li><strong>Zen Sandbox</strong> is a free orbit playground — unlimited shots, no fail state, and collected stars drift back onto the field. Your best session is saved.</li>
-      <li><strong>Daily Orbit</strong> is one fresh puzzle every day — the same level for everyone. <strong>Endless Orbit</strong> keeps dealing harder levels until you run out of shots.</li>
-      <li>Type a <strong>seed</strong> (or open a <strong>?seed=</strong> link) to replay the exact same generated level as a friend.</li>
+      <li><strong>Drag</strong> from the comet to aim — the drag sets the <strong>angle</strong>. Set the <strong>power</strong> with the slider or the arrow keys, then <strong>release</strong> to launch (or press the <strong>Launch</strong> button, or <strong>Space</strong>). A plain click never launches — every shot is a decision.</li>
+      <li>The preview shows only the <strong>first second</strong> of flight. There is no prediction — judge the shot yourself, then fly it.</li>
+      <li>Mid-flight, <strong>hold</strong> the mouse / finger to burn <strong>thrust</strong> toward it, or hold <strong>WASD / arrow keys</strong> to steer. Thrust burns <strong>fuel</strong> — the gold bar in the HUD. Fly through <strong>gold orbs</strong> to refill fuel and bank <strong>+50 bonus</strong> each. <strong>Teal boost pads</strong> refill <strong>+50 fuel</strong> and kick you faster along your flight — the fast line always runs close to something dangerous.</li>
+      <li>Planets <strong>bend</strong> your flight with gravity. Use the bend, don't fight it. Skim close past a planet for a <strong>slingshot</strong> flash — time briefly slows so you can watch the bend — each slingshot pays a <strong>+100 gravity-assist bonus</strong>.</li>
+      <li>Collect <strong>every magenta target</strong> before you run out of shots. Chain two stars on one flight with a good burn — par rewards flying, not just aiming.</li>
+      <li>Crashing into a planet or flying out of bounds <strong>loses the shot</strong>. <strong>Black holes</strong> pull hard and <strong>swallow</strong> comets — arc around them, never through them.</li>
+      <li><strong>Moving planets</strong> orbit their centre (the faint ring shows the path). Time your launch for when the bend lines up, then burn to chase the stars as the bend moves.</li>
+      <li><strong>Portals</strong> come in matching pairs — fly into one and you exit its twin at the same speed. <strong>Shielded targets</strong> (white ring) take two hits: the first cracks the shield, the second collects the star.</li>
+      <li>Press <strong>Space</strong> mid-flight (or the <strong>Skip</strong> button) to <strong>fast-forward</strong> a long drift.</li>
       <li>Beat par for <strong>3 stars</strong>. Finish a level to unlock the next one.</li>
+      <li><strong>Ship upgrades</strong> unlock with campaign stars — <strong>Ion Thrusters</strong> (+25% thrust power) at 15 stars, <strong>Big Tank</strong> (+30% fuel) at 30 stars. Toggle them in Level Select; equipped upgrades show in the HUD.</li>
       <li><strong>Achievements</strong> track your career — first launch, one-shot clears, portal hops, slingshots and more. Check them from the main menu.</li>
       <li><strong>Audio Settings</strong> in the menu (and the pause menu): pick a music style — <strong>Nebula</strong>, <strong>Pulse</strong> or <strong>Deep Field</strong> — toggle sound effects or music, and turn on <strong>reduce flashing</strong> to skip the red crash flash.</li>
     </ul>
     <h3>Controls</h3>
     <ul class="howto-list">
-      <li>Mouse / touch: drag to aim, release to launch &middot; tap / click to launch with the current aim</li>
+      <li>Mouse / touch: drag to aim (angle), release to launch &middot; hold mid-flight to steer with thrust</li>
+      <li>Power slider &middot; arrow keys: angle (0.1° steps) and power &middot; hold Shift for fine aim</li>
+      <li>WASD / arrows mid-flight: steer with thrust &middot; Space mid-flight: fast-forward &middot; Space while aiming: launch</li>
       <li>Pinch to zoom on touch, or the mouse wheel &middot; the HUD − / + buttons and the + / − keys zoom too</li>
-      <li>Hold <strong>Shift</strong> while aiming for fine adjustments (or Shift + arrow keys)</li>
-      <li>Arrow keys: adjust angle and power &middot; Space or Enter: launch</li>
       <li>Enter confirms on menus (Play, Next, Retry, Resume) &middot; arrow keys move between level buttons &middot; Esc closes this panel</li>
       <li>R: retry level &middot; P: pause &middot; M: mute &middot; volume slider in the pause menu</li>
     </ul>
