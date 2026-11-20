@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.15.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.16.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -66,6 +66,12 @@
 // session best is saved and shown in My Stats; and near-miss slow-mo —
 // a slingshot dips the time scale to 0.35x for 450ms (latched in
 // slowMoCount, skipped under reduce motion).
+// Block 16 additions (achievements + stats): the how-to overlay shows on
+// a first visit and never again once closed; the Achievements overlay
+// lists all 14 achievements; the first launch toasts First Launch and
+// completing level 1 in one shot banks five achievements with lifetime
+// stats in a versioned (v2) save; My Stats shows the lifetime totals;
+// Reset Progress (two clicks) wipes the whole save back to fresh.
 // Timeout note (Block 12): the fullscreen nebula shader doubles the
 // frame cost under swiftshader (in-level ~8fps, game time ~0.36x real
 // time), so every game-time-bound wait in this file uses a 30s timeout
@@ -250,11 +256,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.15.0') throw new Error(`expected version 0.15.0, got ${version}`);
+  if (version !== '0.16.0') throw new Error(`expected version 0.16.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.15.0')) throw new Error('menu version v0.15.0 missing');
+  if (!menuText.includes('v0.16.0')) throw new Error('menu version v0.16.0 missing');
   if (!menuText.includes('/ 36')) throw new Error('menu total stars should be / 36 (12 levels)');
-  console.log('render-check: menu renders with v0.15.0');
+  console.log('render-check: menu renders with v0.16.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -302,11 +308,28 @@ try {
   if (!webgl) throw new Error('no WebGL context on the game canvas');
   console.log('render-check: WebGL context exists');
 
-  // PLAY. On a first visit the how-to overlay shows at load instead of the
-  // menu, so close it first if it is up.
-  if (await page.isVisible('#howto')) {
-    await page.click('#btn-howto-close');
+  // Block 16 (#39): on a first visit the how-to overlay shows at load
+  // instead of the menu; closing it records seenHowTo, and a reload then
+  // opens straight into the menu.
+  if (!await page.isVisible('#howto')) {
+    throw new Error('first visit should show the how-to overlay at load');
   }
+  if (await page.isVisible('#menu')) {
+    throw new Error('menu should be hidden while the first-visit how-to is up');
+  }
+  await page.click('#btn-howto-close');
+  await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden'), null, { timeout: 5000 });
+  const seenHowTo = await page.evaluate(() => JSON.parse(window.localStorage.getItem('nor-stars') || '{}').seenHowTo);
+  if (seenHowTo !== true) throw new Error(`closing the how-to should persist seenHowTo, got ${seenHowTo}`);
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.waitForFunction(() => window.__orbit, null, { timeout: 30000 });
+  if (await page.isVisible('#howto')) {
+    throw new Error('second visit should not show the how-to overlay');
+  }
+  if (!await page.isVisible('#menu')) {
+    throw new Error('second visit should open straight into the menu');
+  }
+  console.log('render-check: first visit shows the how-to, closing it persists seenHowTo, reload opens the menu');
 
   // Block 7: the My Stats overlay lists best stars per level (8 rows,
   // locked levels marked) plus the campaign totals and challenge bests,
@@ -330,6 +353,23 @@ try {
   console.log('render-check: My Stats shows 12 rows, 0/36 stars, daily + endless + time attack bests');
   await page.click('#btn-stats-close');
   await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden'), null, { timeout: 5000 });
+
+  // Block 16: the Achievements overlay lists all 14 achievements (none
+  // unlocked yet on a fresh save) and Escape closes it back to the menu.
+  if (!menuText.includes('Achievements')) throw new Error('menu should have an Achievements button');
+  await page.click('#btn-achievements');
+  await page.waitForFunction(() => !document.getElementById('achievements').classList.contains('hidden'), null, { timeout: 5000 });
+  const achRows = await page.evaluate(() => document.querySelectorAll('.achievement-row').length);
+  if (achRows !== 14) throw new Error(`achievements overlay should list 14 rows, got ${achRows}`);
+  const achCount = await page.textContent('#achievements-count');
+  if (!achCount.includes('0 / 14 unlocked')) throw new Error(`achievements count wrong: ${achCount}`);
+  const achFirstRow = await page.evaluate(() => document.querySelector('.achievement-row').textContent);
+  if (!achFirstRow.includes('First Launch') || !achFirstRow.includes('Locked')) {
+    throw new Error(`first achievement row wrong: ${achFirstRow}`);
+  }
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden'), null, { timeout: 5000 });
+  console.log('render-check: Achievements overlay lists 14 locked achievements, Escape closes it');
 
   await page.click('#btn-play');
   await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
@@ -378,6 +418,17 @@ try {
   await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
   console.log('render-check: drag-aim + launch starts flight');
 
+  // Block 16: the first launch earns the First Launch achievement and
+  // toasts it in a gold banner.
+  const toast = await page.evaluate(() => ({
+    visible: !document.getElementById('achievement-toast').classList.contains('hidden'),
+    text: document.getElementById('achievement-toast').textContent,
+  }));
+  if (!toast.visible || !toast.text.includes('Achievement unlocked') || !toast.text.includes('First Launch')) {
+    throw new Error(`achievement toast wrong: ${JSON.stringify(toast)}`);
+  }
+  console.log(`render-check: achievement toast shows "${toast.text}"`);
+
   // Block 4: the collect fires a shockwave ring and live particles while
   // the comet is still flying (polled fast — the ring only lives 0.7s).
   await page.waitForFunction(
@@ -419,6 +470,25 @@ try {
   if (audio1.volume !== 0.6) throw new Error(`default volume should be 0.6, got ${audio1.volume}`);
   if (audio1.muted) throw new Error('game should start unmuted');
   console.log(`render-check: unlock chime fired, music playing at intensity ${audio1.intensity}, volume ${audio1.volume}`);
+
+  // Block 16: completing level 1 in one shot banks the first-launch,
+  // first-star, first-win, one-shot and triple-star achievements, and
+  // the lifetime stats and schema version persist in the save.
+  const ach1 = await page.evaluate(() => window.__orbit.achievementsState());
+  for (const id of ['first-launch', 'first-star', 'first-win', 'one-shot', 'triple-star']) {
+    if (!ach1.unlocked.includes(id)) throw new Error(`achievement ${id} should be unlocked, got ${ach1.unlocked}`);
+  }
+  if (ach1.total !== 14) throw new Error(`achievements total should be 14, got ${ach1.total}`);
+  if (ach1.stats.shots !== 1 || ach1.stats.collects !== 1 || ach1.stats.wins !== 1) {
+    throw new Error(`lifetime stats wrong after level 1: ${JSON.stringify(ach1.stats)}`);
+  }
+  if (ach1.version !== 2) throw new Error(`save schema version should be 2, got ${ach1.version}`);
+  const savedRaw = await page.evaluate(() => window.localStorage.getItem('nor-stars') || '');
+  const saved = JSON.parse(savedRaw);
+  if (saved.version !== 2 || saved.stars['1'] !== 3 || saved.unlocked !== 2) {
+    throw new Error(`persisted save wrong: ${savedRaw}`);
+  }
+  console.log(`render-check: achievements unlocked after level 1: ${ach1.unlocked.join(', ')} (save v${ach1.version}, level 2 unlocked)`);
 
   // Block 5: mute toggle flips the persisted setting and the HUD label.
   await page.evaluate(() => document.getElementById('btn-mute-hud').click());
@@ -1352,6 +1422,52 @@ try {
   }
   console.log('render-check: 390x844 viewport — no overflow, 2-column grid, Enter starts the game, zoom buttons visible');
   await small.close();
+
+  // Block 16 (#48): Reset Progress in My Stats wipes the whole save —
+  // stars, unlocks, lifetime stats and achievements — back to a fresh
+  // v2 save. The button needs two clicks (arm, then confirm).
+  await quitToMenu(page);
+  await page.click('#btn-stats');
+  await page.waitForFunction(() => !document.getElementById('stats').classList.contains('hidden'), null, { timeout: 5000 });
+  const lifetimeBefore = await page.textContent('#stats-lifetime');
+  if (!/Shots launched: \d+/.test(lifetimeBefore) || !lifetimeBefore.includes('Levels won:')) {
+    throw new Error(`stats lifetime line wrong: ${lifetimeBefore}`);
+  }
+  const achLineBefore = await page.textContent('#stats-achievements');
+  if (!achLineBefore.includes('unlocked')) {
+    throw new Error(`stats achievements line wrong: ${achLineBefore}`);
+  }
+  const resetLabel = await page.textContent('#btn-reset-save');
+  if (resetLabel !== 'Reset Progress') throw new Error(`reset button label wrong: ${resetLabel}`);
+  await page.click('#btn-reset-save');
+  const armedLabel = await page.textContent('#btn-reset-save');
+  if (!armedLabel.includes('Click again')) throw new Error(`reset button should arm on first click, got: ${armedLabel}`);
+  await page.click('#btn-reset-save');
+  await page.waitForFunction(
+    () => document.getElementById('campaign-progress-label').textContent.includes('0/12 cleared'),
+    null, { timeout: 5000 },
+  );
+  const afterReset = await page.evaluate(() => ({
+    progress: document.getElementById('campaign-progress-label').textContent,
+    stars: document.getElementById('campaign-progress-stars').textContent,
+    totals: document.getElementById('stats-totals').textContent,
+    ach: window.__orbit.achievementsState(),
+    raw: window.localStorage.getItem('nor-stars') || '',
+  }));
+  if (!afterReset.progress.includes('0/12 cleared') || !afterReset.stars.includes('0 / 36 stars')) {
+    throw new Error(`reset should clear campaign progress: ${JSON.stringify(afterReset)}`);
+  }
+  if (!afterReset.totals.includes('Campaign: 0 / 36 stars · 0 / 12 levels cleared')) {
+    throw new Error(`reset should clear stats totals: ${afterReset.totals}`);
+  }
+  if (afterReset.ach.unlocked.length !== 0 || afterReset.ach.stats.shots !== 0) {
+    throw new Error(`reset should clear achievements and stats: ${JSON.stringify(afterReset.ach)}`);
+  }
+  const resetSave = JSON.parse(afterReset.raw);
+  if (resetSave.version !== 2 || resetSave.unlocked !== 1 || Object.keys(resetSave.stars).length !== 0) {
+    throw new Error(`reset should write a fresh v2 save: ${afterReset.raw}`);
+  }
+  console.log('render-check: Reset Progress wipes stars, unlocks, stats and achievements back to a fresh v2 save');
 
   if (errors.length > 0) {
     throw new Error('console/page errors:\n' + errors.join('\n'));

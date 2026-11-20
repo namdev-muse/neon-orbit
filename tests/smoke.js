@@ -7,6 +7,7 @@ import {
   targetHits, FEEDBACK, FEEDBACK_TIERS,
   NEAR_MISS_BAND, isNearMiss, COMET_RADIUS,
   defaultSave, serializeSave, parseSave, totalStars,
+  SAVE_VERSION, defaultStats, ACHIEVEMENTS, checkAchievements,
   dateSeed, dateKey, seedFromString, parseSeedParam, dailyDifficulty,
   endlessDifficulty, generateLevel, registerGeneratedLevel, solveShot, solveLevel,
   TIME_ATTACK_LEVEL_IDS, TIME_ATTACK_SECONDS, formatClock,
@@ -143,7 +144,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.15.0', VERSION === '0.15.0');
+  check('physics version is 0.16.0', VERSION === '0.16.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -917,6 +918,94 @@ check('level not complete with targets left',
     slowMoScale(NaN, 1450, false) === 1 && slowMoScale(1000, NaN, false) === 1
     && slowMoScale(1000, Infinity, false) === 1);
   check('slow-mo window is 450ms', SLOW_MO_MS === 450);
+}
+
+// --- Block 16: achievements + stats (#48 save versioning, achievements) ---
+{
+  // The achievement table: 14 entries, unique ids, every entry has a
+  // name, a description and an icon.
+  check('14 achievements defined', ACHIEVEMENTS.length === 14);
+  check('achievement ids are unique',
+    new Set(ACHIEVEMENTS.map((a) => a.id)).size === ACHIEVEMENTS.length);
+  check('every achievement has a name, description and icon',
+    ACHIEVEMENTS.every((a) => a.name.length > 0 && a.desc.length > 0 && a.icon.length > 0));
+
+  // A fresh save earns nothing and starts at schema version 2 with
+  // empty lifetime stats and no achievements.
+  check('fresh save unlocks no achievements',
+    checkAchievements(defaultSave()).length === 0);
+  check('default save is schema version 2', defaultSave().version === SAVE_VERSION && SAVE_VERSION === 2);
+  check('default save has empty lifetime stats',
+    JSON.stringify(defaultStats()) === JSON.stringify({ shots: 0, collects: 0, crashes: 0, slingshots: 0, portals: 0, bounces: 0, wins: 0, fails: 0, oneShotClears: 0, lastShotWins: 0, dailyWins: 0 }));
+  check('default save has no achievements', defaultSave().achievements.length === 0);
+
+  // Each achievement fires on exactly the save state it describes.
+  const earned = (mut) => { const s = defaultSave(); mut(s); return checkAchievements(s); };
+  check('first launch fires on 1 shot', earned((s) => { s.stats.shots = 1; }).includes('first-launch'));
+  check('first star fires on 1 collect', earned((s) => { s.stats.collects = 1; }).includes('first-star'));
+  check('first win fires on 1 win', earned((s) => { s.stats.wins = 1; }).includes('first-win'));
+  check('one-shot fires on a 1-shot clear', earned((s) => { s.stats.oneShotClears = 1; }).includes('one-shot'));
+  check('triple star fires on a 3-star level', earned((s) => { s.stars = { 1: 3 }; }).includes('triple-star'));
+  check('halfway fires at 6 cleared levels',
+    earned((s) => { s.stars = { 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1 }; }).includes('halfway'));
+  check('grand tour fires at 12 cleared levels',
+    earned((s) => { s.stars = { 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1, 9: 1, 10: 1, 11: 1, 12: 1 }; }).includes('grand-tour'));
+  check('constellation fires at 36 stars',
+    earned((s) => { s.stars = { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3, 9: 3, 10: 3, 11: 3, 12: 3 }; }).includes('constellation'));
+  check('gravity dancer fires at 10 slingshots', earned((s) => { s.stats.slingshots = 10; }).includes('slingshot-10'));
+  check('down to the wire fires on a last-shot win', earned((s) => { s.stats.lastShotWins = 1; }).includes('last-shot'));
+  check('gate crasher fires on 1 portal hop', earned((s) => { s.stats.portals = 1; }).includes('gate-crasher'));
+  check('daily grind fires on 1 daily win', earned((s) => { s.stats.dailyWins = 1; }).includes('daily-grind'));
+  check('deep space fires at endless best 5', earned((s) => { s.endlessBest = 5; }).includes('deep-space'));
+  check('zen master fires at zen best 10', earned((s) => { s.zenBest = 10; }).includes('zen-master'));
+  // Thresholds are exact: 9 slingshots, endless 4 and zen 9 earn nothing.
+  check('slingshot threshold is exact at 10',
+    !earned((s) => { s.stats.slingshots = 9; }).includes('slingshot-10'));
+  check('deep space threshold is exact at 5',
+    !earned((s) => { s.endlessBest = 4; }).includes('deep-space'));
+  check('zen master threshold is exact at 10',
+    !earned((s) => { s.zenBest = 9; }).includes('zen-master'));
+  // Already-unlocked achievements never re-fire, and a perfect campaign
+  // save earns the whole set at once.
+  check('already-unlocked achievements do not re-fire',
+    (() => { const s = defaultSave(); s.stats.shots = 1; s.achievements = ['first-launch']; return checkAchievements(s).length === 0; })());
+  check('a perfect campaign save earns all 14 achievements',
+    (() => {
+      const s = defaultSave();
+      s.stats = { shots: 5, collects: 20, crashes: 2, slingshots: 10, portals: 1, bounces: 1, wins: 12, fails: 1, oneShotClears: 1, lastShotWins: 1, dailyWins: 1 };
+      s.stars = { 1: 3, 2: 3, 3: 3, 4: 3, 5: 3, 6: 3, 7: 3, 8: 3, 9: 3, 10: 3, 11: 3, 12: 3 };
+      s.endlessBest = 5; s.zenBest = 10;
+      return checkAchievements(s).length === 14;
+    })());
+  // checkAchievements is pure: it never mutates the save.
+  check('checkAchievements does not mutate the save',
+    (() => { const s = defaultSave(); s.stats.shots = 1; const before = JSON.stringify(s); checkAchievements(s); return JSON.stringify(s) === before; })());
+
+  // Save versioning (#48): stats + achievements round-trip, a v1 save
+  // (no version/stats/achievements fields) migrates with its stars and
+  // unlocks intact, and corrupt values are dropped or clamped.
+  const withStats = defaultSave();
+  withStats.stats.shots = 42; withStats.stats.slingshots = 7;
+  withStats.achievements = ['first-launch', 'first-star'];
+  const statsBack = parseSave(serializeSave(withStats));
+  check('save round-trips lifetime stats',
+    statsBack.stats.shots === 42 && statsBack.stats.slingshots === 7);
+  check('save round-trips achievements',
+    JSON.stringify(statsBack.achievements) === JSON.stringify(['first-launch', 'first-star']));
+  check('save round-trips the schema version', statsBack.version === SAVE_VERSION);
+  const v1 = parseSave('{"stars":{"1":3,"2":2},"unlocked":3,"seenHowTo":true,"daily":null,"seedBest":{},"endlessBest":2,"timeAttackBest":null,"zenBest":4}');
+  check('v1 save migrates: stars and unlocks kept',
+    v1.stars[1] === 3 && v1.stars[2] === 2 && v1.unlocked === 3 && v1.zenBest === 4);
+  check('v1 save migrates: stats and achievements start empty',
+    v1.version === SAVE_VERSION && v1.stats.shots === 0 && v1.achievements.length === 0);
+  check('save drops unknown achievement ids',
+    parseSave('{"achievements":["first-launch","nope","first-star"]}').achievements.length === 2);
+  check('save dedupes achievement ids',
+    parseSave('{"achievements":["first-launch","first-launch"]}').achievements.length === 1);
+  check('save clamps negative and huge stat values',
+    (() => { const s = parseSave('{"stats":{"shots":-5,"collects":9999999,"wins":"many"}}'); return s.stats.shots === 0 && s.stats.collects === 999999 && s.stats.wins === 0; })());
+  check('save drops stats for unknown keys',
+    Object.keys(parseSave('{"stats":{"shots":3,"cheat":99}}').stats).length === 11);
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);
