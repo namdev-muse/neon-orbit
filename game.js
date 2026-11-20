@@ -15,7 +15,7 @@ import {
   clampZoom, isTapGesture, focusStep,
 } from './physics.js';
 
-export const VERSION = '0.12.0';
+export const VERSION = '0.13.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';

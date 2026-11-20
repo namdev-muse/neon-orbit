@@ -6,7 +6,16 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.12.0
+**Version:** v0.13.0
+
+## Gameplay
+
+Real captures from a headless-Chromium run of the live game
+(`npm run screenshots` regenerates them — see `tests/screenshots.js`).
+
+| Main menu | Mid-flight | Level complete |
+| --- | --- | --- |
+| ![Main menu — mode select, campaign progress, volume](docs/screenshots/menu.png) | ![Level 1 mid-flight — comet trail ribbon, planet glow, magenta target](docs/screenshots/gameplay.png) | ![Level Complete — 3 stars in 1 shot, confetti burst](docs/screenshots/complete.png) |
 
 ## How to play
 

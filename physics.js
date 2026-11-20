@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.12.0';
+export const VERSION = '0.13.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
