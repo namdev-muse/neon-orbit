@@ -639,3 +639,44 @@ Theme: Achievements + stats.
   drag-aim launch, 5 achievements banked after the 1-shot level-1 clear
   with save v2 / level 2 unlocked, Reset Progress wiping everything back
   to fresh, full campaign sweep).
+
+## Block 17 — 2026-11-20 10:00 Asia/Bangkok (v0.17.0)
+
+Audio polish + music variation, the crash flash, and the gravity-assist bonus.
+
+- **Audio settings panel (#36):** the menu and the pause menu now share a
+  full audio section — an SFX toggle, a music style cycler and a reduce
+  flashing toggle, all persisted in `nor-settings` and synced between the
+  two panels. SFX off silences the SFX bus at the source (`tone()` /
+  `noiseBurst()` return early) while `lastSfx` still records, so the bot
+  harness can assert sounds fired even with SFX off; music is unaffected.
+- **Music styles (#36):** three scheduler presets in `physics.js`
+  (`MUSIC_STYLES`, Node-tested): Nebula (the original Block 5 sound —
+  same roots, arp and 250ms step, so the default changes nothing),
+  Pulse (faster 200ms step, square bass, brighter roots) and Deep Field
+  (slower 333ms step, low sine bass). The cycler steps nebula -> pulse ->
+  deep -> nebula, restarts the scheduler on the new style's step so the
+  change is audible immediately, and the button label follows the style.
+  Unknown style ids fall back to nebula on load.
+- **Crash flash (#32):** a fullscreen red flash on a planet crash, driven
+  by a pure `flashAllowed` limiter in `physics.js` (Node-tested): at most
+  3 flashes per second (333ms minimum interval) and fully suppressed
+  under reduce motion or the new reduce-flashing toggle. The count is
+  latched in `__orbit.flashState` so the render check can assert it
+  fired after the 140ms flash has already faded.
+- **Gravity-assist bonus (#4):** every slingshot near-miss pays +100,
+  banked per level attempt (`state.assistBonus` / `assistCount`) and shown
+  in a gold HUD chip, on the level-complete screen ("Gravity-assist
+  bonus: +100 (1 slingshot) · Best +100"), and as a best per campaign
+  level in the new Bonus column of the My Stats table. Bests persist in
+  the save as `bestBonus` (sanitised 0..9999, campaign levels only; a v1
+  save migrates to empty).
+- Tests: smoke 450 checks PASS (14 new: style table/cycler/fallback,
+  flash limiter/suppression/corrupt clock, assist points/clamping,
+  bestBonus round-trip/clamp/migration), bot 16/16 levels 3 stars. Render
+  check PASS in ~7.5 min, zero console errors (music style cycler steps
+  pulse/deep/nebula with the menu label following, SFX toggle persists
+  and syncs, crash flash fires with SFX off and still records 'crash',
+  reduce flashing suppresses the flash, grazing Level 4 banks +100 with
+  the HUD chip and complete-screen line, best bonus +100 saved and shown
+  in My Stats, full campaign sweep).
