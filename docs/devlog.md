@@ -599,3 +599,43 @@ Theme: Extra modes (endless orbit, time attack, zen sandbox).
   errors (menu v0.15.0, slingshot slow-mo dip, Zen solver collect +
   respawn + miss-without-failing + zen best 3 saved, full campaign
   sweep).
+
+## Block 16 — 2026-11-20 09:00 Asia/Bangkok (v0.16.0)
+
+Theme: Achievements + stats.
+
+- **Achievements:** 14 goals across the whole game — first launch, first
+  star, first win, one-shot clear, 3 stars on any level, 6 / 12 campaign
+  levels cleared, all 36 stars, 10 slingshot near-misses, a last-shot win,
+  a portal hop, a daily win, endless round 5, and 10 stars in one Zen
+  session. The table is pure (`ACHIEVEMENTS` + `checkAchievements` in
+  physics.js, Node-tested: every predicate, exact thresholds, no re-fire,
+  a perfect campaign save earns all 14 at once). Each unlock toasts a gold
+  banner with its own two-note fanfare (distinct from the level-unlock
+  chime) and a screen-reader announcement; toasts queue so a multi-unlock
+  moment shows each in turn. The Achievements overlay lists all 14 with
+  gold unlocked rows and dimmed locked rows, so it doubles as a checklist.
+- **Lifetime stats:** every shot, collect, lost shot, slingshot, portal
+  hop, bounce, win, fail, one-shot clear, last-shot win and daily win is
+  counted in `save.stats` and shown in My Stats, next to an achievements
+  count line.
+- **Save/restore campaign progress (#48):** the save is now a versioned
+  schema (`SAVE_VERSION = 2`, stamped on every write). A v1 save (no
+  version field) migrates on load — its stars, unlocks and bests are kept
+  and the new fields start empty; unknown achievement ids are dropped,
+  duplicates removed, and stat values clamped to 0..999999. **Reset
+  Progress** in My Stats wipes stars, unlocks, bests, stats and
+  achievements back to a fresh v2 save — two clicks to confirm (arm, then
+  erase), so a stray tap can never erase a campaign.
+- **How-to overlay on first visit (#39):** verified rather than built —
+  the overlay already auto-shows on a fresh save and never again once
+  closed. The render check now asserts it: how-to visible at first load,
+  `seenHowTo` persisted on close, reload opens straight into the menu.
+- Tests: smoke 436 checks PASS (36 new: achievement table/predicates/
+  thresholds/purity, stats + achievements round-trip, v1 migration,
+  unknown-id drop, dedupe, clamping), bot 16/16 levels 3 stars. Render
+  check PASS in ~7.2 min, zero console errors (first-visit how-to +
+  reload, achievements overlay 14 locked rows, First Launch toast on the
+  drag-aim launch, 5 achievements banked after the 1-shot level-1 clear
+  with save v2 / level 2 unlocked, Reset Progress wiping everything back
+  to fresh, full campaign sweep).
