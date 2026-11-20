@@ -39,6 +39,9 @@
   </div>
 </div>
 <div id="aim-readout" class="hidden">Drag back from the comet to aim — release to launch</div>
+<!-- Screen-reader live region (#50): visually hidden, announced on every
+     major event (level start, collect, lost shot, win, fail). -->
+<div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
 <div id="power-meter" class="power-meter hidden" aria-label="Shot power">
   <div id="power-fill"></div>
   <span id="power-label">Power 60%</span>
@@ -63,6 +66,12 @@
     <label class="slider-row">Volume
       <input id="volume-range-menu" type="range" min="0" max="100" value="60" aria-label="Volume">
       <span id="volume-value-menu">60%</span>
+    </label>
+    <label class="toggle-row">Reduce motion
+      <input id="reduce-motion-menu" type="checkbox" aria-label="Reduce motion — no screen shake or flashing effects">
+    </label>
+    <label class="toggle-row">Music
+      <input id="music-toggle-menu" type="checkbox" checked aria-label="Music on or off">
     </label>
     <div id="campaign-progress" class="campaign-progress" aria-label="Campaign progress">
       <div class="campaign-progress-text"><span id="campaign-progress-label">Campaign — 0/12 cleared</span><span id="campaign-progress-stars">0 / 36 stars</span></div>
@@ -154,6 +163,12 @@
     <label class="slider-row">Screen shake
       <input id="shake-range" type="range" min="0" max="100" value="100" aria-label="Screen shake strength">
       <span id="shake-value">100%</span>
+    </label>
+    <label class="toggle-row">Reduce motion
+      <input id="reduce-motion-pause" type="checkbox" aria-label="Reduce motion — no screen shake or flashing effects">
+    </label>
+    <label class="toggle-row">Music
+      <input id="music-toggle-pause" type="checkbox" checked aria-label="Music on or off">
     </label>
     <label class="slider-row">Volume
       <input id="volume-range-pause" type="range" min="0" max="100" value="60" aria-label="Volume">

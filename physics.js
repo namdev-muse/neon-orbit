@@ -1,6 +1,6 @@
 // Neon Orbit — pure physics + level logic.
 // No DOM, no Three.js imports: importable from Node (tests) and from game.js.
-export const VERSION = '0.13.0';
+export const VERSION = '0.14.0';
 
 export const MAX_SPEED = 22; // comet launch speed at full power (units / s)
 export const PLAYFIELD_RADIUS = 26; // out of bounds beyond this distance
@@ -898,4 +898,62 @@ export function focusStep(current, count, delta) {
   if (count <= 0) return -1;
   if (current < 0) return delta >= 0 ? 0 : count - 1;
   return (((current + delta) % count) + count) % count;
+}
+
+// --- FPS guard (Block 14, #46) ---
+// Frame-time EMA with hysteresis: a sustained slow EMA steps the quality
+// level down (lower pixel ratio, fewer particles); a sustained fast EMA
+// steps it back up. Levels are pure data so game.js applies them to the
+// renderer and the particle spawners; the guard itself never touches the
+// DOM, so Node smoke tests can drive it with synthetic frame times.
+export const PERF_LEVELS = [
+  { pixelRatio: 2, particleScale: 1 },
+  { pixelRatio: 1.5, particleScale: 0.75 },
+  { pixelRatio: 1.25, particleScale: 0.5 },
+  { pixelRatio: 1, particleScale: 0.35 },
+];
+export const PERF_SLOW_MS = 24; // EMA above this means the frame budget is blown
+export const PERF_FAST_MS = 14; // EMA below this means headroom to step back up
+export const PERF_SLOW_HOLD_MS = 1000; // slow for a full second before stepping down
+export const PERF_FAST_HOLD_MS = 3000; // fast for three seconds before stepping up
+export function createPerfGuard() {
+  const guard = {
+    emaMs: 0,
+    level: 0,
+    slowTime: 0,
+    fastTime: 0,
+    stepsDown: 0,
+    stepsUp: 0,
+    // Feed one frame time (ms). Returns the current level after applying
+    // the step rules; NaN / infinite / negative frames are ignored so a
+    // corrupted clock can never drive the quality to the floor.
+    update(dtMs) {
+      if (typeof dtMs !== 'number' || !Number.isFinite(dtMs) || dtMs < 0) return this.level;
+      this.emaMs = this.emaMs === 0 ? dtMs : this.emaMs * 0.9 + dtMs * 0.1;
+      if (this.emaMs > PERF_SLOW_MS) {
+        this.slowTime += dtMs;
+        this.fastTime = 0;
+        if (this.slowTime >= PERF_SLOW_HOLD_MS && this.level < PERF_LEVELS.length - 1) {
+          this.level++;
+          this.stepsDown++;
+          this.slowTime = 0;
+        }
+      } else if (this.emaMs < PERF_FAST_MS) {
+        this.fastTime += dtMs;
+        this.slowTime = 0;
+        if (this.fastTime >= PERF_FAST_HOLD_MS && this.level > 0) {
+          this.level--;
+          this.stepsUp++;
+          this.fastTime = 0;
+        }
+      } else {
+        this.slowTime = 0;
+        this.fastTime = 0;
+      }
+      return this.level;
+    },
+    pixelRatio() { return PERF_LEVELS[this.level].pixelRatio; },
+    particleScale() { return PERF_LEVELS[this.level].particleScale; },
+  };
+  return guard;
 }

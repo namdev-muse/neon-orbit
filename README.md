@@ -6,7 +6,7 @@ target before you run out of shots — crash into a planet or fly out of bounds
 and the shot is lost. Beat par for 3 stars and unlock the next level.
 
 **Live:** https://namdev-muse.github.io/neon-orbit/
-**Version:** v0.13.0
+**Version:** v0.14.0
 
 ## Gameplay
 

@@ -1,4 +1,4 @@
-// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.11.0).
+// Neon Orbit — Three.js 3D gravity-slingshot puzzle (v0.14.0).
 // Drag back from the comet to aim, release to launch. Planets bend the
 // flight with gravity; collect every magenta target before shots run out.
 import * as THREE from 'three';
@@ -12,10 +12,10 @@ import {
   dateSeed, dateKey, dailyDifficulty, endlessDifficulty, parseSeedParam,
   generateLevel, registerGeneratedLevel, solveShot,
   TIME_ATTACK_LEVEL_IDS, TIME_ATTACK_SECONDS, formatClock,
-  clampZoom, isTapGesture, focusStep,
+  clampZoom, isTapGesture, focusStep, createPerfGuard, PERF_LEVELS,
 } from './physics.js';
 
-export const VERSION = '0.13.0';
+export const VERSION = '0.14.0';
 const THREE_VERSION = '0.160.0';
 const SAVE_KEY = 'nor-stars';
 const SETTINGS_KEY = 'nor-settings';
@@ -25,6 +25,9 @@ const PREVIEW_DOTS = 96; // fading trajectory dots sampled from the preview
 const FINE_AIM_SCALE = 0.25; // Shift-held drag moves the aim 4x slower
 const TRAIL_MAX = 48;
 const PARTICLE_MAX = 240;
+// FPS guard (#46) scales this 1 -> 0.35 as the quality level drops, so
+// bursts and confetti shrink instead of the frame rate collapsing.
+let particleScale = 1;
 
 // ---------------------------------------------------------------- state
 // Challenge-mode ids: generated levels register under these ids and
@@ -79,6 +82,13 @@ function persistSave() {
   try { window.localStorage.setItem(SAVE_KEY, serializeSave(save)); } catch { /* storage unavailable */ }
 }
 function loadSettings() {
+  // Reduce motion defaults to the OS preference when nothing is saved
+  // yet, so a player who asked their system for less motion gets it on
+  // the first visit without hunting for a toggle (#44 / #50).
+  let osReduceMotion = false;
+  try {
+    osReduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch { /* matchMedia unavailable */ }
   try {
     const raw = JSON.parse(window.localStorage.getItem(SETTINGS_KEY) || '{}');
     return {
@@ -86,9 +96,11 @@ function loadSettings() {
       volume: typeof raw.volume === 'number' ? Math.max(0, Math.min(1, raw.volume)) : 0.6,
       shake: typeof raw.shake === 'number' ? Math.max(0, Math.min(1, raw.shake)) : 1,
       zoom: clampZoom(raw.zoom),
+      reduceMotion: typeof raw.reduceMotion === 'boolean' ? raw.reduceMotion : osReduceMotion,
+      music: typeof raw.music === 'boolean' ? raw.music : true,
     };
   } catch {
-    return { muted: false, shake: 1, zoom: 1 };
+    return { muted: false, shake: 1, zoom: 1, reduceMotion: osReduceMotion, music: true };
   }
 }
 function persistSettings() {
@@ -307,7 +319,7 @@ function scheduleMusicStep(step, at) {
 }
 
 function startMusic() {
-  if (musicTimer || !audioCtx) return;
+  if (musicTimer || !audioCtx || !settings.music) return;
   nextNoteTime = audioCtx.currentTime + 0.1;
   musicStep = 0;
   musicTimer = window.setInterval(() => {
@@ -318,6 +330,34 @@ function startMusic() {
       nextNoteTime += 0.25;
     }
   }, 200);
+}
+
+function stopMusic() {
+  if (musicTimer) {
+    window.clearInterval(musicTimer);
+    musicTimer = null;
+  }
+}
+
+// Music toggle (#44): off stops the scheduler (the gain stays, so SFX
+// still play), on restarts it from the next step when audio is ready.
+function setMusic(on) {
+  settings.music = !!on;
+  persistSettings();
+  if (settings.music) startMusic();
+  else stopMusic();
+  updateSettingsToggles();
+}
+
+// Reduce motion + music checkboxes live in the menu and the pause menu;
+// every change syncs all four so the two panels never disagree.
+function updateSettingsToggles() {
+  for (const suffix of ['menu', 'pause']) {
+    const rm = document.getElementById(`reduce-motion-${suffix}`);
+    if (rm) rm.checked = settings.reduceMotion;
+    const mu = document.getElementById(`music-toggle-${suffix}`);
+    if (mu) mu.checked = settings.music;
+  }
 }
 
 function toggleMute() {
@@ -663,7 +703,8 @@ let particleCursor = 0;
 
 function spawnBurst(x, y, z, hexColor, count, speed, life) {
   const c = new THREE.Color(hexColor);
-  for (let n = 0; n < count; n++) {
+  const n = Math.max(1, Math.round(count * particleScale));
+  for (let k = 0; k < n; k++) {
     const i = particleCursor;
     particleCursor = (particleCursor + 1) % PARTICLE_MAX;
     const a = Math.random() * Math.PI * 2;
@@ -717,6 +758,9 @@ for (let i = 0; i < SHOCKWAVE_MAX; i++) {
 let shockwaveCursor = 0;
 
 function spawnShockwave(x, y, hexColor, maxScale, life) {
+  // Reduce motion (#50): expanding flash rings are the one effect that
+  // reads as a strobe — skip them entirely; the burst and sound remain.
+  if (settings.reduceMotion) return;
   const s = shockwaves[shockwaveCursor];
   shockwaveCursor = (shockwaveCursor + 1) % SHOCKWAVE_MAX;
   s.mesh.position.set(x, y, 0.1);
@@ -777,7 +821,11 @@ for (let i = 0; i < CONFETTI_MAX; i++) {
 let confettiCursor = 0;
 
 function spawnConfetti(x, y, count) {
-  for (let n = 0; n < count; n++) {
+  // Reduce motion (#50): no confetti storm on a win — the win arpeggio
+  // and the gold bursts at each target still celebrate.
+  if (settings.reduceMotion) return;
+  const n = Math.max(1, Math.round(count * particleScale));
+  for (let k = 0; k < n; k++) {
     const i = confettiCursor;
     confettiCursor = (confettiCursor + 1) % CONFETTI_MAX;
     const mesh = confettiMeshes[i];
@@ -832,6 +880,8 @@ function countActiveConfetti() {
 // token's deadline freezes time, so an older, longer stop can never end a
 // newer freeze early (and vice versa — the newest stop owns the restore).
 let trauma = 0;
+let peakTrauma = 0; // highest trauma reached on the current shot (Block 14:
+// the render check reads it to prove reduce motion really zeroes shake)
 let hitStopUntil = 0;
 let hitStopToken = 0;
 let slingshotCount = 0; // near-miss slingshots credited on the current shot
@@ -841,6 +891,7 @@ let shieldHitCount = 0; // shield cracks on the current shot
 
 function addTrauma(amount) {
   trauma = Math.min(1, trauma + amount);
+  peakTrauma = Math.max(peakTrauma, trauma);
 }
 function hitStop(seconds) {
   hitStopToken++;
@@ -850,10 +901,13 @@ function hitStop(seconds) {
 // One funnel for every game-feel event, so responses stay proportional.
 // Trauma + hit-stop come from the FEEDBACK tier table in physics.js;
 // each kind then adds its own sound, particle burst and shockwave ring.
+// Reduce motion (#44 / #50): no trauma (so no shake), no shockwave rings
+// and no confetti — the sound and the small particle burst still fire, so
+// the event reads without the flash or the camera movement.
 function feedback(kind, x, y) {
   const f = FEEDBACK[kind];
   if (!f) return;
-  addTrauma(f.trauma);
+  if (!settings.reduceMotion) addTrauma(f.trauma);
   if (f.hitStop > 0) hitStop(f.hitStop);
   if (kind === 'launch') { sfx.launch(); }
   else if (kind === 'collect') {
@@ -984,6 +1038,14 @@ function setAimReadout(text) {
 }
 function hideAimReadout() {
   $('aim-readout').classList.add('hidden');
+}
+
+// Screen-reader announcements (#50): the live region is visually hidden
+// but read aloud on every major event, so the game is playable by ear —
+// level starts, collects, lost shots, wins and failures.
+function announce(msg) {
+  const el = $('sr-status');
+  if (el) el.textContent = msg;
 }
 
 function renderLevelSelect() {
@@ -1481,6 +1543,7 @@ function beginLevel(level, mode) {
   state.shotsLeft = shotBudget(level);
   setAim(defaultAimAngle(level, []), 0.6);
   updateHUD();
+  announce(`Level ${level.id} — ${level.name}. Par ${level.par}, ${level.targets.length} target${level.targets.length === 1 ? '' : 's'}, ${state.shotsLeft} shots.`);
   $('hud').classList.remove('hidden');
   showOnly(null);
   // A hidden button keeps its focus in some browsers; drop it so the
@@ -1579,6 +1642,7 @@ function launch() {
   flightAcc = 0;
   flightEnding = false;
   slingshotCount = 0;
+  peakTrauma = 0;
   portalCount = 0;
   bounceCount = 0;
   shieldHitCount = 0;
@@ -1679,6 +1743,7 @@ function completeLevel() {
   }
   $('complete-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
   let shotsLine = `Finished in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'} (par ${level.par})`;
+  announce(`Level complete — ${stars} star${stars === 1 ? '' : 's'} in ${state.shotsUsed} shot${state.shotsUsed === 1 ? '' : 's'}.`);
   if (state.mode === 'daily' && save.daily) {
     shotsLine += ` · Daily best: ${'★'.repeat(save.daily.stars)}${'☆'.repeat(3 - save.daily.stars)}`;
   } else if (state.mode === 'seed') {
@@ -1736,6 +1801,7 @@ function failLevel(reason) {
     persistSave();
   }
   $('failed-text').textContent = text;
+  announce(`Out of shots — ${level.name} failed. ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left.`);
   // Failed-screen stats: what this attempt cost, and the best already
   // banked on this level (campaign) or in this mode (challenge).
   const budget = shotBudget(level);
@@ -1855,6 +1921,9 @@ function stepFlightLoop(dt) {
       }
       state.targetsRemaining = level.targets.length - state.collected.length;
       updateHUD();
+      announce(state.targetsRemaining === 0
+        ? 'All targets collected.'
+        : `Star collected — ${state.targetsRemaining} target${state.targetsRemaining === 1 ? '' : 's'} left.`);
       if (isLevelComplete(level, state.collected)) {
         flightEnding = true;
         scheduleEndShot(700);
@@ -1862,6 +1931,10 @@ function stepFlightLoop(dt) {
       }
     } else if (ev && (ev.type === 'crash' || ev.type === 'lost' || ev.type === 'timeout' || ev.type === 'swallowed' || ev.type === 'invalid')) {
       flightEnding = true;
+      announce(ev.type === 'crash' ? 'Comet crashed into a planet — shot lost.'
+        : ev.type === 'swallowed' ? 'Comet swallowed by a black hole — shot lost.'
+        : ev.type === 'timeout' ? 'Comet ran out of steam — shot lost.'
+        : 'Comet flew out of bounds — shot lost.');
       if (ev.type === 'crash') {
         feedback('crash', flight.x, flight.y);
         comet.visible = false;
@@ -2218,6 +2291,26 @@ function wireButtons() {
     $('shake-value').textContent = `${shakeRange.value}%`;
     persistSettings();
   });
+  // Settings toggles (#44): reduce motion + music, mirrored in the menu
+  // and the pause menu — one handler per checkbox, all synced.
+  for (const suffix of ['menu', 'pause']) {
+    const rm = $(`reduce-motion-${suffix}`);
+    if (rm) {
+      rm.addEventListener('change', () => {
+        settings.reduceMotion = rm.checked;
+        persistSettings();
+        updateSettingsToggles();
+      });
+    }
+    const mu = $(`music-toggle-${suffix}`);
+    if (mu) {
+      mu.addEventListener('change', () => {
+        ensureAudio();
+        setMusic(mu.checked);
+      });
+    }
+  }
+  updateSettingsToggles();
 }
 
 // ---------------------------------------------------------------- resize + context loss
@@ -2279,15 +2372,34 @@ function updateTargetMeshes() {
 
 // ---------------------------------------------------------------- main loop
 let lastNow = performance.now();
+// FPS guard (#46): a pure frame-time EMA; the level it reports drives the
+// renderer's pixel ratio and the particle budget. Applied lazily — only
+// when the level actually changes, so a steady game never touches GL state.
+const perfGuard = createPerfGuard();
+let appliedPerfLevel = 0;
+function applyPerfLevel() {
+  const level = perfGuard.level;
+  if (level === appliedPerfLevel) return;
+  appliedPerfLevel = level;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, perfGuard.pixelRatio()));
+  particleScale = perfGuard.particleScale();
+  fitCamera();
+}
 
 function animate(now) {
   requestAnimationFrame(animate);
   const dt = Math.min((now - lastNow) / 1000, 0.05);
   lastNow = now;
+  // Feed every frame (ms) to the guard; a level change re-applies the
+  // renderer pixel ratio and the particle budget for the next frame.
+  perfGuard.update(dt * 1000);
+  applyPerfLevel();
   const stopped = now < hitStopUntil;
   // Trauma decays with real time, so shake settles even during hit-stop.
   trauma = Math.max(0, trauma - dt * 1.4);
-  const shake = trauma * trauma * settings.shake;
+  // Reduce motion (#50) zeroes the shake at the source — the slider still
+  // scales it for everyone else.
+  const shake = settings.reduceMotion ? 0 : trauma * trauma * settings.shake;
   const t = now / 1000;
   // The nebula shader drifts with real time (#29).
   nebulaUniforms.uTime.value = t;
@@ -2298,8 +2410,9 @@ function animate(now) {
   );
   camera.lookAt(0, 0, 0);
   // Predicted-end marker pulses while aiming so the predicted outcome reads.
+  // Reduce motion holds it steady — the ring itself still shows the outcome.
   if (previewEndRing.visible) {
-    const s = 1 + 0.18 * Math.sin(t * 6);
+    const s = settings.reduceMotion ? 1 : 1 + 0.18 * Math.sin(t * 6);
     previewEndRing.scale.setScalar(s);
   }
   if (!stopped) {
@@ -2455,6 +2568,7 @@ window.__orbit = {
   }),
   feedbackState: () => ({
     trauma,
+    peakTrauma,
     hitStopActive: performance.now() < hitStopUntil,
     hitStopToken,
     shockwavesActive: shockwaves.filter((s) => s.life > 0).length,
@@ -2481,6 +2595,43 @@ window.__orbit = {
     failures: auditFailures,
     recoveries: auditRecoveries,
     lastFailure: lastAuditFailure,
+  }),
+  // FPS guard (Block 14, #46): the frame-time EMA, the current quality
+  // level, the pixel ratio and particle scale it applies, and how many
+  // times it stepped down or back up this session.
+  perfState: () => ({
+    emaMs: Math.round(perfGuard.emaMs * 100) / 100,
+    level: perfGuard.level,
+    appliedLevel: appliedPerfLevel,
+    pixelRatio: renderer.getPixelRatio(),
+    // The guard's target ratio (2 at level 0); the renderer applies
+    // min(devicePixelRatio, target), so on a DPR-1 screen the applied
+    // ratio stays 1 while the target still tracks the level.
+    targetPixelRatio: perfGuard.pixelRatio(),
+    particleScale,
+    stepsDown: perfGuard.stepsDown,
+    stepsUp: perfGuard.stepsUp,
+  }),
+  // Test-only frame feeder for the render check: drives the guard with
+  // synthetic frame times (ms) so a slow device can be simulated without
+  // waiting for real slow frames. Returns the level after the feed.
+  testPerf: (dtMs, frames = 1) => {
+    let level = perfGuard.level;
+    for (let i = 0; i < frames; i++) level = perfGuard.update(dtMs);
+    applyPerfLevel();
+    return level;
+  },
+  // Settings state (Block 14, #44/#50) for the render check: the persisted
+  // toggles, the last screen-reader announcement, and whether the OS
+  // asked for reduced motion on this visit.
+  settingsState: () => ({
+    reduceMotion: settings.reduceMotion,
+    music: settings.music,
+    shake: settings.shake,
+    lastAnnouncement: (() => { const el = document.getElementById('sr-status'); return el ? el.textContent : ''; })(),
+    osReduceMotion: (() => {
+      try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
+    })(),
   }),
   // Test-only corruption hook for the render check: 'flight' NaNs the
   // live flight state (the physics guard must end the shot cleanly),

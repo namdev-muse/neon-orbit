@@ -39,6 +39,39 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* Screen-reader-only live region (#50): takes no space, stays readable
+   by assistive tech, and never flashes on screen. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Visible keyboard focus (#50): every interactive element gets the same
+   cyan outline, so keyboard-only play always shows where focus is. */
+.btn:focus-visible, .icon-btn:focus-visible, .level-btn:focus-visible,
+input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
+.seed-row input:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+/* Reduced motion at the CSS level (#50): no transitions or pulsing while
+   the OS asks for less motion — the in-game shake/flash gates in game.js
+   cover the canvas side. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
 /* ---------- HUD ---------- */
 #hud {
   position: fixed;
@@ -197,7 +230,6 @@ html, body {
 .btn:hover, .btn:focus-visible {
   background: rgba(139, 92, 246, 0.4);
   box-shadow: 0 0 16px rgba(139, 92, 246, 0.6);
-  outline: none;
 }
 
 .btn:active { transform: scale(0.97); }
@@ -240,6 +272,8 @@ html, body {
 }
 
 .icon-btn:hover { border-color: var(--cyan); }
+
+.icon-btn:focus-visible { border-color: var(--cyan); }
 
 /* ---------- Camera zoom label (HUD, between the − / + buttons) ---------- */
 .zoom-label {
@@ -353,14 +387,13 @@ html, body {
 }
 
 .seed-row input:focus {
-  outline: none;
   border-color: var(--cyan);
   box-shadow: 0 0 12px rgba(34, 211, 238, 0.5);
 }
 
 .seed-row .btn { margin: 0; width: auto; }
 
-/* ---------- Pause slider ---------- */
+/* ---------- Pause slider + settings toggles ---------- */
 .slider-row {
   display: flex;
   align-items: center;
@@ -371,6 +404,26 @@ html, body {
 }
 
 .slider-row input[type="range"] { flex: 1; accent-color: var(--cyan); }
+
+/* Checkbox toggle rows (menu + pause, #44): label left, box right. */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 4px;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.toggle-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--cyan);
+  cursor: pointer;
+  flex-shrink: 0;
+}
 
 /* ---------- Small screens ---------- */
 @media (max-width: 560px) {
