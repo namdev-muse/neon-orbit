@@ -141,7 +141,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.11.0', VERSION === '0.11.0');
+  check('physics version is 0.12.0', VERSION === '0.12.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',

@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.11.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.12.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -51,6 +51,17 @@
 // browser; the pause menu's Restart Level and Quit to Menu are clicked
 // for real; and the NaN guards + 1s state audit are exercised by
 // corrupting the live flight and the level clock through the test hook.
+// Block 12 additions (visual polish): the nebula background shader
+// animates, every planet wears a fresnel atmosphere halo, the comet's
+// trail is a fading glow ribbon mid-flight, and completing a level
+// bursts 3D confetti shards from the collected targets.
+// Timeout note (Block 12): the fullscreen nebula shader doubles the
+// frame cost under swiftshader (in-level ~8fps, game time ~0.36x real
+// time), so every game-time-bound wait in this file uses a 30s timeout
+// (20s for the 10s ones) — a 10s-max flight takes ~28s of real time
+// there. On a real GPU the game runs at 60fps and these waits resolve
+// in a few seconds; the longer timeouts only slow down a genuine
+// failure, they never weaken an assertion.
 // Reuses playwright-core from the Neon Hexfall checkout and the cached
 // Chromium headless shell.
 //
@@ -132,7 +143,7 @@ async function playLevelToCompletion(page, label) {
     if (phase !== 'aim') {
       await page.waitForFunction(
         () => ['aim', 'complete', 'failed'].includes(window.__orbit.state.phase),
-        null, { timeout: 15000 },
+        null, { timeout: 30000 },
       );
       continue;
     }
@@ -144,7 +155,7 @@ async function playLevelToCompletion(page, label) {
     if (!shot) throw new Error(`${label}: solver found no collecting line in 15s`);
     await page.waitForFunction(
       (t0) => window.__orbit.info().levelTime >= t0 - 0.05,
-      shot.t0, { timeout: 10000 },
+      shot.t0, { timeout: 20000 },
     );
     const before = await page.evaluate(() => window.__orbit.state.shotsUsed);
     await page.evaluate((s) => {
@@ -153,7 +164,7 @@ async function playLevelToCompletion(page, label) {
     }, shot);
     await page.waitForFunction(
       (want) => window.__orbit.state.shotsUsed > want || window.__orbit.state.phase === 'complete',
-      before, { timeout: 15000 },
+      before, { timeout: 30000 },
     );
   }
   const phase = await page.evaluate(() => window.__orbit.state.phase);
@@ -228,11 +239,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.11.0') throw new Error(`expected version 0.11.0, got ${version}`);
+  if (version !== '0.12.0') throw new Error(`expected version 0.12.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.11.0')) throw new Error('menu version v0.11.0 missing');
+  if (!menuText.includes('v0.12.0')) throw new Error('menu version v0.12.0 missing');
   if (!menuText.includes('/ 36')) throw new Error('menu total stars should be / 36 (12 levels)');
-  console.log('render-check: menu renders with v0.11.0');
+  console.log('render-check: menu renders with v0.12.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -359,7 +370,7 @@ try {
   // the comet is still flying (polled fast — the ring only lives 0.7s).
   await page.waitForFunction(
     () => window.__orbit.feedbackState().shockwavesActive > 0,
-    null, { polling: 20, timeout: 15000 },
+    null, { polling: 20, timeout: 30000 },
   );
   const juice1 = await page.evaluate(() => window.__orbit.feedbackState());
   if (juice1.particlesAlive < 5) {
@@ -370,7 +381,7 @@ try {
   // Wait for the shot to resolve (collect, crash, or out of bounds).
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
-    null, { timeout: 15000 },
+    null, { timeout: 30000 },
   );
   const after = await page.evaluate(() => ({
     phase: window.__orbit.state.phase,
@@ -387,7 +398,7 @@ try {
   // calm intensity 0 on level 1 with the default 60% volume, unmuted.
   await page.waitForFunction(
     () => window.__orbit.audioState().lastSfx === 'unlock',
-    null, { polling: 50, timeout: 10000 },
+    null, { polling: 50, timeout: 20000 },
   );
   const audio1 = await page.evaluate(() => window.__orbit.audioState());
   if (!audio1.audioReady) throw new Error('AudioContext was not created on PLAY');
@@ -445,12 +456,12 @@ try {
     });
     await page.waitForFunction(
       (want) => window.__orbit.state.shotsUsed >= want,
-      n, { timeout: 15000 },
+      n, { timeout: 30000 },
     );
   }
   await page.waitForFunction(
     () => window.__orbit.audioState().lastSfx === 'lastShot',
-    null, { polling: 50, timeout: 10000 },
+    null, { polling: 50, timeout: 20000 },
   );
   const tense = await page.evaluate(() => window.__orbit.audioState().intensity);
   if (tense !== 1) throw new Error(`last-shot intensity should be 1, got ${tense}`);
@@ -463,7 +474,7 @@ try {
     window.__orbit.aim(Math.PI / 2, 1.0);
     window.__orbit.launch();
   });
-  await page.waitForFunction(() => window.__orbit.state.phase === 'failed', null, { timeout: 15000 });
+  await page.waitForFunction(() => window.__orbit.state.phase === 'failed', null, { timeout: 30000 });
   const failedText = await page.textContent('#failed-stats');
   if (!failedText.includes('Shots used: 4 / 4 · Par 2')) {
     throw new Error(`failed stats wrong: ${failedText}`);
@@ -512,7 +523,7 @@ try {
   });
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
-    null, { timeout: 15000 },
+    null, { timeout: 30000 },
   );
   const after7 = await page.evaluate(() => ({
     phase: window.__orbit.state.phase,
@@ -541,7 +552,7 @@ try {
   });
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
-    null, { timeout: 15000 },
+    null, { timeout: 30000 },
   );
   console.log('render-check: level 8 launch resolves cleanly');
 
@@ -559,14 +570,14 @@ try {
   }, portalShot);
   await page.waitForFunction(
     () => window.__orbit.feedbackState().portalCount >= 1,
-    null, { polling: 20, timeout: 15000 },
+    null, { polling: 20, timeout: 30000 },
   );
   const portalAudio = await page.evaluate(() => window.__orbit.audioState().lastSfx);
   if (portalAudio !== 'portal') throw new Error(`portal hop should play the portal SFX, got: ${portalAudio}`);
   console.log('render-check: level 9 portal hop fired (portalCount 1, portal SFX)');
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
-    null, { timeout: 15000 },
+    null, { timeout: 30000 },
   );
   await playLevelToCompletion(page, 'portal hop');
   console.log('render-check: level 9 Portal Hop completes');
@@ -587,7 +598,7 @@ try {
   }, crackShot);
   await page.waitForFunction(
     () => window.__orbit.feedbackState().shieldHitCount >= 1,
-    null, { polling: 20, timeout: 15000 },
+    null, { polling: 20, timeout: 30000 },
   );
   const cracked = await page.evaluate(() => window.__orbit.info().shieldHits);
   if (Object.keys(cracked).length < 1) {
@@ -598,7 +609,7 @@ try {
   console.log(`render-check: level 10 shield cracked (${JSON.stringify(cracked)}), shieldhit SFX`);
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1,
-    null, { timeout: 15000 },
+    null, { timeout: 30000 },
   );
   await playLevelToCompletion(page, 'shielded stars');
   console.log('render-check: level 10 Shielded Stars completes in 4 shots');
@@ -616,14 +627,14 @@ try {
   });
   await page.waitForFunction(
     () => window.__orbit.feedbackState().bounceCount >= 1,
-    null, { polling: 20, timeout: 15000 },
+    null, { polling: 20, timeout: 30000 },
   );
   const bounceAudio = await page.evaluate(() => window.__orbit.audioState().lastSfx);
   if (bounceAudio !== 'bounce') throw new Error(`bounce should play the bounce SFX, got: ${bounceAudio}`);
   console.log('render-check: level 11 bounce pad reflected the comet (bounceCount 1, bounce SFX)');
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
-    null, { timeout: 15000 },
+    null, { timeout: 30000 },
   );
   await playLevelToCompletion(page, 'bounce house');
   console.log('render-check: level 11 Bounce House completes');
@@ -713,7 +724,7 @@ try {
   if (!corrupted) throw new Error('testCorrupt(flight) found no live flight to corrupt');
   await page.waitForFunction(
     () => window.__orbit.state.phase === 'aim' || window.__orbit.state.phase === 'failed',
-    null, { timeout: 10000 },
+    null, { timeout: 20000 },
   );
   const afterCorrupt = await page.evaluate(() => ({
     phase: window.__orbit.state.phase,
@@ -728,7 +739,7 @@ try {
   if (!timeCorrupted) throw new Error('testCorrupt(time) failed');
   await page.waitForFunction(
     (before) => window.__orbit.auditState().recoveries > before,
-    auditBefore.recoveries, { polling: 100, timeout: 10000 },
+    auditBefore.recoveries, { polling: 100, timeout: 20000 },
   );
   const auditAfter = await page.evaluate(() => ({
     audit: window.__orbit.auditState(),
@@ -759,7 +770,7 @@ try {
       const s = window.__orbit.feedbackState();
       return s.hitStopActive ? s : null;
     },
-    null, { polling: 20, timeout: 15000 },
+    null, { polling: 20, timeout: 30000 },
   );
   const crashState = await crashHandle.jsonValue();
   if (crashState.trauma < 0.7) {
@@ -775,7 +786,7 @@ try {
   console.log('render-check: hit-stop restored after the crash freeze');
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1,
-    null, { timeout: 15000 },
+    null, { timeout: 30000 },
   );
 
   // Block 4: the grazing Level 4 line (-20deg, power 0.3) collects the
@@ -788,13 +799,47 @@ try {
   });
   await page.waitForFunction(
     () => window.__orbit.feedbackState().slingshotCount >= 1,
-    null, { polling: 20, timeout: 15000 },
+    null, { polling: 20, timeout: 30000 },
   );
   console.log('render-check: grazing Level 4 line credited a slingshot near-miss');
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
-    null, { timeout: 15000 },
+    null, { timeout: 30000 },
   );
+
+  // Block 12 (#28/#29/#30): visual polish — nebula background, planet
+  // atmosphere glow, fading comet trail ribbon, level-complete confetti.
+  await page.evaluate(() => window.__orbit.selectLevel(1));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const visual1 = await page.evaluate(() => window.__orbit.visualState());
+  if (visual1.planetGlows !== 1) {
+    throw new Error(`level 1 should have 1 planet glow halo, got ${visual1.planetGlows}`);
+  }
+  if (!(visual1.nebulaTime > 0)) {
+    throw new Error(`nebula shader clock should be running, got ${visual1.nebulaTime}`);
+  }
+  console.log(`render-check: nebula background animating (t=${visual1.nebulaTime.toFixed(1)}s), ${visual1.planetGlows} planet glow halo on level 1`);
+  const trailShot = await page.evaluate(() => window.__orbit.solveShot());
+  if (!trailShot) throw new Error('solver found no collecting line for the trail test');
+  await page.evaluate((s) => {
+    window.__orbit.aim(s.angle, s.power);
+    window.__orbit.launch();
+  }, trailShot);
+  await page.waitForFunction(
+    () => window.__orbit.visualState().trailPoints >= 5,
+    null, { polling: 20, timeout: 30000 },
+  );
+  const trailState = await page.evaluate(() => window.__orbit.visualState());
+  if (!trailState.trailRibbonVisible) {
+    throw new Error('trail ribbon should be visible mid-flight');
+  }
+  console.log(`render-check: comet trail ribbon glowing mid-flight (${trailState.trailPoints} points)`);
+  await page.waitForFunction(() => window.__orbit.state.phase === 'complete', null, { timeout: 30000 });
+  const confetti = await page.evaluate(() => window.__orbit.visualState().confettiActive);
+  if (confetti < 5) {
+    throw new Error(`level complete should burst confetti, got ${confetti} active shards`);
+  }
+  console.log(`render-check: level complete burst ${confetti} confetti shards`);
 
   // Block 6: challenge modes — daily, seed links, endless.
   await quitToMenu(page);
@@ -921,7 +966,7 @@ try {
   await page.keyboard.press('Space');
   await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
   console.log('render-check: ArrowLeft adjusts aim, Space launches (keyboard-only)');
-  await page.waitForFunction(() => window.__orbit.state.shotsUsed >= 1, null, { timeout: 15000 });
+  await page.waitForFunction(() => window.__orbit.state.shotsUsed >= 1, null, { timeout: 30000 });
 
   // P pauses; the pause overlay focuses Resume, and Enter resumes.
   await page.keyboard.press('p');
@@ -1007,7 +1052,7 @@ try {
   console.log('render-check: touchscreen tap launches with the current aim');
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
-    null, { timeout: 15000 },
+    null, { timeout: 30000 },
   );
 
   // Pinch zoom: two pointers spreading apart zooms in, and lifting a
