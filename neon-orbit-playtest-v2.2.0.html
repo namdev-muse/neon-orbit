@@ -2090,17 +2090,22 @@ function targetHits(target) {
 
 // ---------------------------------------------------------------- default aim
 // The aim a level opens with (and resets to after each shot): the NEAREST
-// uncollected target, never a crash line. The old default aimed at the
-// first target in the list — on Ember Drift that line runs straight
-// through the orange planet, so a player who pressed Launch without
-// dragging crashed on shot one. The bot's winning lines are the same
-// family: low, slow shots at the close stars, thrusting early while the
-// comet is slow. If the direct line is blocked by a planet or a black
-// hole, the angle rotates to the nearest clear line (5° steps, ±60°);
-// if no line clears, the direct angle stands — the player still aims.
-// Clearance is checked on the straight segment from the pad toward the
-// target (gravity bends the real flight, but the opening of a straight
-// crash line is what the default must never be).
+// uncollected target, never a crash line — and never the answer either.
+// The old default aimed at the first target in the list (v1), then at
+// the nearest target on a straight, clearance-checked line (M2 retune).
+// The straight line is the wrong test: gravity bends the real flight,
+// so on Ember Drift the "clear" −52° line flew out of bounds and every
+// re-aim after the first target pointed straight into a planet or a
+// black hole. The default is now SIMULATION-VERIFIED: candidate
+// (angle, power) pairs around the direct line are flown ballistically
+// and ranked by closest approach to the nearest target, skipping any
+// line that crashes, is swallowed, or collects that target. A default
+// that collected would make the whole campaign completable by mashing
+// Launch with no dragging and no thrust — the passive aim-and-watch
+// slop the rebuild exists to kill — so the default is a safe, close
+// flyby that shows the player the arc, and the player still has to
+// drag to score. If no surviving near-miss exists, the old clearance
+// angle stands. Moving targets are aimed at their position at t0.
 const AIM_CLEAR_MARGIN = 1.0; // extra clearance beyond a body's radius
 const AIM_CLEAR_HOLE_EXTRA = 0.4; // black holes pull: give them more room
 function aimLineClear(level, px, py, angle, length) {
@@ -2122,18 +2127,23 @@ function aimLineClear(level, px, py, angle, length) {
   }
   return true;
 }
-function defaultAimAngle(level, collected = []) {
+// The old straight-line default, kept as the fallback when no simulated
+// near-miss line exists: nearest uncollected target (at t0), rotating
+// off a blocked line in 5° steps to ±60°.
+function clearanceAimAngle(level, collected = [], t0 = 0) {
   const done = new Set(Array.isArray(collected) ? collected : []);
   let best = -1, bestDist = Infinity;
   level.targets.forEach((t, i) => {
     if (done.has(i)) return;
-    const dx = t.x - level.pad.x, dy = t.y - level.pad.y;
+    const pos = targetPosAt(t, t0);
+    const dx = pos.x - level.pad.x, dy = pos.y - level.pad.y;
     const d = dx * dx + dy * dy;
     if (d < bestDist) { bestDist = d; best = i; }
   });
   if (best === -1) best = 0;
   const t = level.targets[best];
-  const base = Math.atan2(t.y - level.pad.y, t.x - level.pad.x);
+  const pos = targetPosAt(t, t0);
+  const base = Math.atan2(pos.y - level.pad.y, pos.x - level.pad.x);
   const length = Math.min(Math.sqrt(bestDist) + 2, PLAYFIELD_RADIUS);
   if (aimLineClear(level, level.pad.x, level.pad.y, base, length)) return base;
   const step = (5 * Math.PI) / 180;
@@ -2144,6 +2154,51 @@ function defaultAimAngle(level, collected = []) {
     }
   }
   return base;
+}
+const DEFAULT_AIM_POWERS = [0.3, 0.45, 0.6, 0.75];
+function defaultAim(level, collected = [], t0 = 0, shieldHits = {}) {
+  const done = new Set(Array.isArray(collected) ? collected : []);
+  let best = -1, bestDist = Infinity;
+  level.targets.forEach((t, i) => {
+    if (done.has(i)) return;
+    const pos = targetPosAt(t, t0);
+    const dx = pos.x - level.pad.x, dy = pos.y - level.pad.y;
+    const d = dx * dx + dy * dy;
+    if (d < bestDist) { bestDist = d; best = i; }
+  });
+  if (best === -1) best = 0;
+  const target = level.targets[best];
+  const pos = targetPosAt(target, t0);
+  const base = Math.atan2(pos.y - level.pad.y, pos.x - level.pad.x);
+  const step = (2 * Math.PI) / 180;
+  let bestCand = null;
+  for (const power of DEFAULT_AIM_POWERS) {
+    for (let k = -20; k <= 20; k++) {
+      const angle = base + k * step;
+      const sim = simulateLaunch(level, angle, power, collected,
+        { record: true, t0, shieldHits });
+      if (sim.outcome === 'crash' || sim.outcome === 'swallowed') continue;
+      if (sim.collected.includes(best)) continue;
+      let approach = Infinity;
+      const pts = sim.points;
+      for (let i = 0; i < pts.length; i++) {
+        const tt = Math.min(i * 4 * SUBSTEP, sim.time);
+        const tp = targetPosAt(target, t0 + tt);
+        const d = Math.hypot(pts[i][0] - tp.x, pts[i][1] - tp.y);
+        if (d < approach) approach = d;
+      }
+      // Prefer a close flyby that ends promptly over a long orbit.
+      const score = approach + sim.time * 0.05;
+      if (!bestCand || score < bestCand.score) {
+        bestCand = { angle, power, approach, time: sim.time, score };
+      }
+    }
+  }
+  if (bestCand) return { angle: bestCand.angle, power: bestCand.power };
+  return { angle: clearanceAimAngle(level, collected, t0), power: 0.6 };
+}
+function defaultAimAngle(level, collected = []) {
+  return defaultAim(level, collected).angle;
 }
 
 function launchState(level, angle, power, t0 = 0, shieldHits = {}, orbsCollected = [], loadout) {
@@ -4903,7 +4958,8 @@ function beginLevel(level, mode) {
   resetCometToPad();
   state.phase = 'aim';
   state.shotsLeft = shotBudget(level);
-  setAim(defaultAimAngle(level, []), 0.6);
+  const d0 = defaultAim(level, [], levelTime, state.shieldHits);
+  setAim(d0.angle, d0.power);
   updateHUD();
   announce(mode === 'zen'
     ? 'Zen Sandbox — unlimited shots. Collect stars; they drift back onto the field. No fail state, just flow.'
@@ -5092,7 +5148,8 @@ function endShot() {
   }
   state.phase = 'aim';
   resetCometToPad();
-  setAim(defaultAimAngle(level, state.collected), 0.6);
+  const dRe = defaultAim(level, state.collected, levelTime, state.shieldHits);
+  setAim(dRe.angle, dRe.power);
   updateHUD();
   // Down to the last shot: a two-tone warning so the player knows it.
   if (state.shotsLeft === 1) sfx.lastShot();
@@ -5356,6 +5413,14 @@ let lastThrustSfxAt = 0;
 let thrustParticleTick = 0;
 function stepFlightLoop(dt) {
   if (!flight) return;
+  // Mid-flight steer tracks the pointer, not a stale world point: the
+  // camera follows the comet, so re-project the held screen point every
+  // frame — a pointer held still on a target keeps steering at that
+  // target instead of at empty space the camera left behind.
+  if (thrustPointerId !== null && thrustClient) {
+    const p = worldFromClient(thrustClient.x, thrustClient.y);
+    if (p) state.pointerThrust = { x: p.x, y: p.y };
+  }
   flightAcc += dt;
   let guard = 0;
   while (flightAcc >= SUBSTEP && flight && !flightEnding && guard < 12) {
@@ -5556,6 +5621,12 @@ let dragStartAngle = 0; // aim angle when the drag began (fine-aim anchor)
 // Thrust steering pointer (v2): the pointer held mid-flight steers the
 // comet toward its world position. Separate from the aim drag.
 let thrustPointerId = null;
+// The held thrust pointer's SCREEN position. The camera pans and zooms to
+// follow the comet mid-flight, so the world point under a still pointer
+// drifts — stepFlightLoop re-projects this screen point every frame, so
+// holding the pointer on a target keeps steering at that target instead
+// of at empty space the camera left behind.
+let thrustClient = null;
 // The press point of the current drag (screen px). A tap is a press
 // that lifts where it started; a drag is a press that moved. The launch
 // guard measures the pointer's own displacement — never the distance
@@ -5571,14 +5642,19 @@ let pinching = false;
 let pinchStartDist = 0;
 let pinchStartZoom = 1;
 
-function worldFromEvent(e) {
+// Screen point -> world point on the playfield plane, with the CURRENT
+// camera. Returns null when the ray never meets the plane. The shared
+// temp vector is copied out by every caller, never stored.
+const worldHit = new THREE.Vector3();
+function worldFromClient(clientX, clientY) {
   const rect = renderer.domElement.getBoundingClientRect();
-  ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(ndc, camera);
-  const hit = new THREE.Vector3();
-  raycaster.ray.intersectPlane(dragPlane, hit);
-  return hit;
+  return raycaster.ray.intersectPlane(dragPlane, worldHit);
+}
+function worldFromEvent(e) {
+  return worldFromClient(e.clientX, e.clientY);
 }
 
 function aimFromPointer(e) {
@@ -5613,6 +5689,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     dragging = false;
     state.pointerThrust = null;
     thrustPointerId = null;
+    thrustClient = null;
     pinching = true;
     const [a, b] = [...activePointers.values()];
     pinchStartDist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -5623,6 +5700,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   if (state.phase === 'fly') {
     // Hold to steer: the comet burns toward the held pointer position.
     thrustPointerId = e.pointerId;
+    thrustClient = { x: e.clientX, y: e.clientY };
     const p = worldFromEvent(e);
     if (p) state.pointerThrust = { x: p.x, y: p.y };
     try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* no active pointer */ }
@@ -5650,6 +5728,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   }
   // Mid-flight steer: the held pointer is the thrust target.
   if (state.phase === 'fly' && e.pointerId === thrustPointerId) {
+    thrustClient = { x: e.clientX, y: e.clientY };
     const p = worldFromEvent(e);
     if (p) state.pointerThrust = { x: p.x, y: p.y };
     return;
@@ -5662,11 +5741,12 @@ renderer.domElement.addEventListener('pointerup', (e) => {
   activePointers.delete(e.pointerId);
   if (activePointers.size < 2) pinching = false;
   // A pinch ending never launches — lifting a finger is not a shot.
-  if (wasPinching) { dragging = false; state.pointerThrust = null; thrustPointerId = null; return; }
+  if (wasPinching) { dragging = false; state.pointerThrust = null; thrustPointerId = null; thrustClient = null; return; }
   // Releasing the steering pointer stops the burn.
   if (e.pointerId === thrustPointerId) {
     state.pointerThrust = null;
     thrustPointerId = null;
+    thrustClient = null;
     return;
   }
   if (!dragging || e.pointerId !== dragPointerId) return;
@@ -5687,7 +5767,7 @@ renderer.domElement.addEventListener('pointercancel', (e) => {
   activePointers.delete(e.pointerId);
   if (activePointers.size < 2) pinching = false;
   if (e.pointerId === dragPointerId) dragging = false;
-  if (e.pointerId === thrustPointerId) { state.pointerThrust = null; thrustPointerId = null; }
+  if (e.pointerId === thrustPointerId) { state.pointerThrust = null; thrustPointerId = null; thrustClient = null; }
 });
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 // Mouse wheel zooms the camera in and out (zoom buttons and pinch do the
