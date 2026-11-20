@@ -440,3 +440,48 @@ the game defends itself against corrupted state.
   `launchState` guard used `Number.isFinite(power)`, so infinite power
   fell back to a still comet instead of clamping to full speed. It now
   clamps any non-NaN power into 0..1 and only falls back on NaN.
+
+## Block 12 — 2026-11-20 07:00 Asia/Bangkok (v0.12.0)
+
+Theme: visual polish — nebula background, planet glow, trails.
+
+- **Comet trail glow (#28):** the comet's trail is now a fading ribbon,
+  not just a line — a triangle strip built from the last 48 flight
+  positions, tapering from 0.55 units wide at the head to a point at the
+  tail, its vertex colours fading cyan to black so additive blending
+  melts it into the dark. The thin cyan line stays as a bright core.
+  `updateTrailLine` rebuilds both every frame from `trailHistory`.
+- **Planet atmosphere glow + nebula background (#29):** one shader per
+  effect. Every planet wears a fresnel halo — a backside sphere 1.45x
+  the planet, additive, in the planet's own colour (`glowColor`
+  uniform), riding with moving planets. Behind the starfield, a 240-unit
+  plane runs a slowly drifting 2-octave value-noise nebula in violet /
+  magenta / cyan, its `uTime` uniform advanced every frame. The noise
+  hash is a cheap fract hash, not `sin` — the first version used a
+  sin-based hash and 3 octaves (see the perf bug below).
+- **Level-complete confetti (#30):** a pool of 90 small 3D shards (gold,
+  magenta, cyan, violet, white) bursts from every collected target on
+  level complete — 25 per target — tumbling under gravity, spinning, and
+  shrinking away over ~2s. Pooled and reused, no allocation per win.
+  A new `__orbit.visualState()` hook exposes trail length, ribbon
+  visibility, the nebula clock, glow count and live confetti for the
+  render check.
+- Tests: smoke stays 370 checks (physics untouched; only the version
+  check bumped to 0.12.0), bot 15/15 levels 3 stars. The render check
+  now asserts the nebula clock is running, 1 glow halo on level 1, the
+  ribbon visible mid-flight (5 points), and 50 confetti shards live on
+  level complete (two 25-shard bursts overlapped — the solver's grid
+  search blocks the main thread briefly, freezing the earlier burst's
+  decay). Zero console errors.
+- Perf bug found by the render check (fixed before pushing): the first
+  nebula shader (sin-based hash, 3-octave fbm, fullscreen) doubled the
+  frame cost under swiftshader — in-level ~8fps, game time ~0.36x real
+  time — and the campaign sweep timed out waiting for a shot to resolve
+  (a 10s-max flight takes ~28s of real time there). A frame-rate probe
+  (`/tmp/probe-fps.mjs`, kept out of the repo) showed the nebula cost
+  ~11fps: without it the same scene runs ~19fps. The fix was a cheap
+  fract hash + 2 octaves, and the render check's game-time-bound waits
+  moved from 15s to 30s (10s to 20s) with a comment explaining why —
+  on a real GPU the game runs at 60fps and these waits resolve in
+  seconds. The FPS guard (#46, Block 14) is the proper home for
+  slow-device handling.
