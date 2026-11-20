@@ -556,3 +556,46 @@ Theme: GitHub Pages verify + perf + accessibility.
   v0.14.0, live-region announcement, focus/reduced-motion CSS,
   reduce-motion zero-trauma probe, music toggle, FPS guard step
   down/up, full campaign sweep).
+
+## Block 15 — 2026-11-20 08:30 Asia/Bangkok (v0.15.0)
+
+Theme: Extra modes (endless orbit, time attack, zen sandbox).
+
+- **Zen Sandbox (#21):** a free orbit playground — unlimited shots, no
+  fail state, collected stars drift back onto the field 1.5s after
+  collection. One static planet, one moving planet (radius-7 orbit), one
+  black hole and three stars, hand-placed so every clearance rule holds
+  and the bot solver clears it in 2 shots. `shotBudget()` returns
+  `Infinity` for a zen level, so the HUD shows `Shots n · ∞` and
+  `endShot` can never complete or fail the level; the session star count
+  is banked live as `save.zenBest` and shown in My Stats. Respawn timers
+  carry a generation token, so quitting or restarting can never resurrect
+  a target in a later level. Menu button, `__orbit.playZen()` hook, and
+  a how-to entry.
+- **Near-miss slow-mo (#31):** a slingshot dips the simulation time scale
+  to 0.35× for 450ms of real time, so the player can watch the bend. The
+  scale is a pure helper (`slowMoScale`, Node-tested: 0.35 inside the
+  window, 1 outside it, 1 under reduce motion, 1 on a corrupted clock)
+  applied to the simulation dt in the animate loop; trauma decay, the
+  nebula and the Time Attack clock stay on real time, so a dip can never
+  buy extra seconds or freeze the game slow. Latched in `slowMoCount`
+  per shot for the render check.
+- Two real bugs found by the render check and fixed in this block: (1)
+  the 1s state audit's `shotsLeft` check required a finite integer, so
+  Zen's infinite budget tripped it on every launch and the audit killed
+  the flight as a lost shot within a second — the audit now allows
+  `Infinity` exactly when the budget is infinite. (2) The audit's
+  corrupt-flight recovery ended the shot silently — which path fired was
+  a race between the audit and the next animation frame, so the recovery
+  now gives the same lost-shot feel (sound, burst, "out of bounds"
+  announcement) as the physics guard's `invalid` path, with the burst
+  position falling back to the pad when the flight itself is NaN.
+- Also fixed: the `index.html` version paragraph still said v0.13.0 (the
+  Block 14 nit) — now v0.15.0 everywhere.
+- Tests: smoke 400 checks PASS (17 new: zen layout/clearances/budget/
+  solvability/registration, slow-mo scale/window/reduce-motion/corrupt
+  clock, zenBest round-trip/clamp), bot 16/16 levels 3 stars (Zen
+  Sandbox in 2 shots). Render check PASS in ~7.1 min, zero console
+  errors (menu v0.15.0, slingshot slow-mo dip, Zen solver collect +
+  respawn + miss-without-failing + zen best 3 saved, full campaign
+  sweep).
