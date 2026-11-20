@@ -265,6 +265,34 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
   pointer-events: none;
 }
 
+/* Visible shot-outcome line (M2 retune): mirrors the screen-reader
+   announcements so the player SEES what just happened to the shot —
+   "Star collected", "Comet crashed into a planet — shot lost" — right
+   under the HUD, fading out after a few seconds. Hidden until an
+   announcement shows it, so it never competes with the aim readout. */
+#hud-outcome {
+  position: fixed;
+  top: calc(56px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(11, 6, 32, 0.85);
+  border: 1px solid rgba(255, 209, 102, 0.45);
+  border-radius: 999px;
+  padding: 7px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--gold);
+  text-shadow: 0 0 10px rgba(255, 209, 102, 0.5);
+  max-width: 92vw;
+  white-space: normal;
+  text-align: center;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+#hud-outcome.show { opacity: 1; }
+
 /* ---------- Overlays ---------- */
 /* The overlay is a light veil (v2): the live 3D scene shows through
    behind the panel — the menu IS the game, never a flat panel over
@@ -756,6 +784,7 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
     <button id="btn-pause" class="icon-btn" type="button" aria-label="Pause game">Pause</button>
   </div>
 </div>
+<div id="hud-outcome" class="hud-outcome" aria-hidden="true"></div>
 <div id="aim-readout" class="hidden">Drag back from the comet to aim — release to launch</div>
 <!-- Screen-reader live region (#50): visually hidden, announced on every
      major event (level start, collect, lost shot, win, fail). -->
@@ -829,13 +858,13 @@ input[type="range"]:focus-visible, input[type="checkbox"]:focus-visible,
     <h2>How to Play</h2>
     <ul class="howto-list">
       <li><strong>Drag</strong> from the comet to aim — the drag sets the <strong>angle</strong>. Set the <strong>power</strong> with the slider or the arrow keys, then <strong>release</strong> to launch (or press the <strong>Launch</strong> button, or <strong>Space</strong>). A plain click never launches — every shot is a decision.</li>
-      <li>The preview shows only the <strong>first second</strong> of flight. There is no prediction — judge the shot yourself, then fly it.</li>
+      <li>The preview shows only the <strong>first two seconds</strong> of flight — long enough to see the gravity bend around the first planet, never the outcome. There is no prediction — judge the shot yourself, then fly it.</li>
       <li>Mid-flight, <strong>hold</strong> the mouse / finger to burn <strong>thrust</strong> toward it, or hold <strong>WASD / arrow keys</strong> to steer. Thrust burns <strong>fuel</strong> — the gold bar in the HUD. Fly through <strong>gold orbs</strong> to refill fuel and bank <strong>+50 bonus</strong> each. <strong>Teal boost pads</strong> refill <strong>+50 fuel</strong> and kick you faster along your flight — the fast line always runs close to something dangerous.</li>
-      <li>Planets <strong>bend</strong> your flight with gravity. Use the bend, don't fight it. Skim close past a planet for a <strong>slingshot</strong> flash — time briefly slows so you can watch the bend — each slingshot pays a <strong>+100 gravity-assist bonus</strong>.</li>
+      <li>Planets <strong>bend</strong> your flight with gravity. Use the bend, don't fight it — <strong>slow shots bend hardest</strong>, so a gentle launch often finds the line a fast one misses. Skim close past a planet for a <strong>slingshot</strong> flash — time briefly slows so you can watch the bend — each slingshot pays a <strong>+100 gravity-assist bonus</strong>.</li>
       <li>Collect <strong>every magenta target</strong> before you run out of shots. Chain two stars on one flight with a good burn — par rewards flying, not just aiming.</li>
       <li>Crashing into a planet or flying out of bounds <strong>loses the shot</strong>. <strong>Black holes</strong> pull hard and <strong>swallow</strong> comets — arc around them, never through them.</li>
       <li><strong>Moving planets</strong> orbit their centre (the faint ring shows the path). Time your launch for when the bend lines up, then burn to chase the stars as the bend moves.</li>
-      <li><strong>Portals</strong> come in matching pairs — same colour ring, joined by a faint line in that colour. Fly into one and you exit its twin at the same speed. <strong>Shielded targets</strong> (white ring) take two hits: the first cracks the shield — the ring turns amber — the second collects the star.</li>
+      <li><strong>Portals</strong> come in matching pairs — same colour ring, joined by a faint line in that colour. Fly into one and you exit its twin at the same speed. A pair goes <strong>dim for a moment after a hop</strong> while it recharges — a dim ring won't take you. <strong>Shielded targets</strong> (white ring) take two hits: the first cracks the shield — the ring turns amber — the second collects the star.</li>
       <li>Press <strong>Space</strong> mid-flight (or the <strong>Skip</strong> button) to <strong>fast-forward</strong> a long drift.</li>
       <li>Beat par for <strong>3 stars</strong>. Finish a level to unlock the next one.</li>
       <li><strong>Ship upgrades</strong> unlock with campaign stars — <strong>Ion Thrusters</strong> (+25% thrust power) at 15 stars, <strong>Big Tank</strong> (+30% fuel) at 30 stars. Toggle them in Level Select; equipped upgrades show in the HUD.</li>
@@ -1391,7 +1420,7 @@ const LEVELS = [
   },
   {
     id: 10, name: 'Shield Breaker', par: 3,
-    hint: 'Two stars wear shields — each takes two hits. Crack a shield on the way past, then come back and collect.',
+    hint: 'Two stars wear shields — each takes two hits. Crack a shield on the way past, then come back and collect. Slow shots bend hardest — low power lets gravity do the work.',
     theme: { disc: '#1a0208', tint: '#ffb3c2' },
     pad: { x: -15, y: 0 },
     planets: [
@@ -1408,7 +1437,7 @@ const LEVELS = [
   },
   {
     id: 11, name: 'Double Carousel', par: 3,
-    hint: 'Two planets circle the centre in opposite directions. The bend never sits still — launch into the gap and ride the moving gravity.',
+    hint: 'Two planets circle the centre in opposite directions. The bend never sits still — launch into the gap and ride the moving gravity. Slow shots bend hardest — low power lets gravity do the work.',
     theme: { disc: '#0a1602', tint: '#e6ffb3' },
     pad: { x: -16, y: -6 },
     planets: [
@@ -1442,7 +1471,7 @@ const LEVELS = [
   },
   {
     id: 12, name: 'The Gauntlet', par: 3,
-    hint: 'Everything at once, turned up: a moving giant, a black hole, a portal pair, and a shielded star hiding in the middle. Fly the gauntlet.',
+    hint: 'Everything at once, turned up: a moving giant, a black hole, a portal pair, and a shielded star hiding in the middle. Fly the gauntlet — and fly it slow: low power bends hardest.',
     theme: { disc: '#20060a', tint: '#ffe9b0' },
     pad: { x: -17, y: 0 },
     planets: [
@@ -2333,7 +2362,7 @@ function stepFlight(state, level, dt, collected, newlyCollected, thrust) {
     state.x = twin.x + nx * (twin.r + COMET_RADIUS + 0.2);
     state.y = twin.y + ny * (twin.r + COMET_RADIUS + 0.2);
     state.portalCooldown[pair] = state.t + 0.6;
-    return { type: 'portal', targets: [] };
+    return { type: 'portal', targets: [], pair };
   }
   // Bounce pad: reflect the velocity about the radial normal (mirror
   // bounce), once per pad per shot, and push the comet just outside the
@@ -2910,7 +2939,8 @@ function createPerfGuard() {
 // Drag to aim, release to launch — then STEER the comet mid-flight with
 // limited fuel thrust. Planets bend the flight with gravity; collect
 // every magenta target before shots run out. The prediction oracle is
-// dead: the preview shows only the first second of flight, never the
+// dead: the preview shows only the first two seconds of flight —
+// enough to read the gravity bend around the first planet, never the
 // outcome.
 import * as THREE from 'three';
 
@@ -3621,8 +3651,13 @@ let targetMeshes = [];
 let targetRings = [];
 let shieldMeshes = []; // shield ring per target (null unless shielded)
 let blackHoleMeshes = []; // { disc, ring } per black hole (disc spins)
-let portalMeshes = []; // { group, disc, ring } per portal (disc swirls)
-let portalLinkMeshes = []; // faint line between twin portals, same pair colour
+let portalMeshes = []; // { group, disc, ring, pair } per portal (disc swirls)
+let portalLinkMeshes = []; // { line, pair } faint line between twin portals, same pair colour
+// Portal cooldown read (M2 retune): pair -> level time until the pair
+// takes a comet again. While cooling, the pair's rings, discs and twin
+// line dim, so a re-entry that silently does nothing reads as a
+// recharging portal instead of a broken one.
+const portalCoolUntil = {};
 let bouncePadMeshes = []; // { disc, ring } per bounce pad
 let boostPadMeshes = []; // { disc, ring } per boost pad (Block 2, #3)
 let orbMeshes = []; // gold octahedron per trail orb (null when collected)
@@ -4280,9 +4315,29 @@ function hideAimReadout() {
 // Screen-reader announcements (#50): the live region is visually hidden
 // but read aloud on every major event, so the game is playable by ear —
 // level starts, collects, lost shots, wins and failures.
+// Visible outcome line (M2 retune): every announcement also shows in
+// the HUD outcome line for ~4 seconds, in the SAME synchronous call —
+// the 19:00 playtest saw the outcome lag a shot behind because the
+// only outcome text was the sr-only region. Mirroring here means the
+// visible line can never lag the event. It only shows while the HUD is
+// visible (in-game), never over a menu.
+let outcomeTimer = 0;
 function announce(msg) {
   const el = $('sr-status');
   if (el) el.textContent = msg;
+  const out = $('hud-outcome');
+  const hud = $('hud');
+  if (out && hud && !hud.classList.contains('hidden')) {
+    out.textContent = msg;
+    out.classList.add('show');
+    window.clearTimeout(outcomeTimer);
+    outcomeTimer = window.setTimeout(() => out.classList.remove('show'), 4000);
+  }
+}
+function hideOutcomeLine() {
+  const out = $('hud-outcome');
+  if (out) out.classList.remove('show');
+  window.clearTimeout(outcomeTimer);
 }
 
 function renderLevelSelect() {
@@ -4497,6 +4552,7 @@ function buildLevelMeshes(level) {
   blackHoleMeshes = [];
   portalMeshes = [];
   portalLinkMeshes = [];
+  for (const k of Object.keys(portalCoolUntil)) delete portalCoolUntil[k];
   bouncePadMeshes = [];
   boostPadMeshes = [];
   orbMeshes = [];
@@ -4575,7 +4631,7 @@ function buildLevelMeshes(level) {
     disc.position.z = -0.2;
     group.add(disc);
     levelGroup.add(group);
-    portalMeshes.push({ group, disc, ring, base: portal.r });
+    portalMeshes.push({ group, disc, ring, pair, base: portal.r });
   }
   // Twin links (M2 playtest fix): a faint line in the pair colour joins
   // twin portals, so the pairing reads at a glance instead of being
@@ -4599,7 +4655,7 @@ function buildLevelMeshes(level) {
       });
       const line = new THREE.Line(geo, mat);
       levelGroup.add(line);
-      portalLinkMeshes.push(line);
+      portalLinkMeshes.push({ line, pair });
     }
   }
   // Bounce pads: a lime disc on the playfield with a bright rim.
@@ -4730,11 +4786,14 @@ function updatePreview() {
   state.previewOutcome = 'none';
   state.previewEnd = null;
 
-  // Trajectory STUB (v2, audit fix): only the first second of flight —
-  // enough to read the launch direction, never enough to know the
-  // outcome. The full path and the end marker were the oracle; both are
-  // gone. Preview points are recorded every 4th substep (30 per second).
-  const pts = sim.points.slice(0, Math.min(PREVIEW_MAX, 30));
+  // Trajectory STUB (v2, audit fix, M2 retune): the first two seconds
+  // of flight — enough to read the launch direction AND the gravity
+  // bend around the first planet, never enough to know the outcome.
+  // The one-second stub hid the bend that decides every late-level
+  // shot, so players aimed straight lines into guard planets. The full
+  // path and the end marker were the oracle; both stay gone. Preview
+  // points are recorded every 4th substep (30 per second).
+  const pts = sim.points.slice(0, Math.min(PREVIEW_MAX, 60));
   for (let i = 0; i < pts.length; i++) {
     previewPositions[i * 3] = pts[i][0];
     previewPositions[i * 3 + 1] = pts[i][1];
@@ -5103,6 +5162,7 @@ function launch() {
   previewLine.visible = false;
   previewDots.visible = false;
   trailLine.visible = false;
+  hideOutcomeLine(); // a stale outcome must not linger into the next shot
   updateHUD();
   updatePowerMeter();
   hideAimReadout();
@@ -5470,7 +5530,10 @@ function stepFlightLoop(dt) {
     });
     if (ev && ev.type === 'portal') {
       // The comet jumped to the twin portal: clear the trail so no streak
-      // crosses the playfield, and flash the exit point.
+      // crosses the playfield, and flash the exit point. The pair cools
+      // down for 0.6s in the physics — mark it here so the rings dim
+      // until it takes a comet again.
+      if (ev.pair !== undefined) portalCoolUntil[ev.pair] = levelTime + 0.6;
       feedback('portal', flight.x, flight.y);
       trailHistory = [];
       updateTrailLine();
@@ -6213,6 +6276,30 @@ function updateTargetMeshes() {
   });
 }
 
+// Portal cooldown read (M2 retune): while a pair cools down after a
+// hop, its rings, discs and twin line dim to a quarter of their usual
+// opacity, then come back to full — so a re-entry during the 0.6s
+// cooldown reads as "recharging", not "broken". Materials are shared
+// per pair colour, so dimming the material dims both twins at once.
+// Runs every frame; pairs not present in the level are untouched, and
+// a cleared cooldown restores full opacity on the next frame.
+function updatePortalCooldownVisuals() {
+  if (portalMeshes.length === 0) return;
+  const level = levelById(state.levelId);
+  if (!level) return;
+  const pairs = new Set(levelPortals(level).map((p) => (p.pair ?? 0) % PORTAL_COLORS.length));
+  for (const pair of pairs) {
+    const cooling = (portalCoolUntil[pair] || 0) > levelTime;
+    const f = cooling ? 0.25 : 1;
+    portalRingMats[pair].opacity = 0.95 * f;
+    portalDiscMats[pair].opacity = 0.3 * f;
+  }
+  for (const link of portalLinkMeshes) {
+    const cooling = (portalCoolUntil[link.pair] || 0) > levelTime;
+    link.line.material.opacity = cooling ? 0.06 : 0.3;
+  }
+}
+
 // ---------------------------------------------------------------- main loop
 let lastNow = performance.now();
 // FPS guard (#46): a pure frame-time EMA; the level it reports drives the
@@ -6310,6 +6397,7 @@ function animate(now) {
         const pulse = 1 + 0.06 * Math.sin(t * 3 + portal.group.position.x);
         portal.ring.scale.setScalar(portal.base * pulse);
       }
+      updatePortalCooldownVisuals();
       // Shield rings turn slowly around their target.
       for (const shield of shieldMeshes) {
         if (shield && shield.visible) shield.rotation.z += sdt * 0.6;
