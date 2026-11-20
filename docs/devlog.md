@@ -516,3 +516,43 @@ Theme: README + screenshots + repo polish.
   tiers, pooled particles, no credentials, no auto-posting).
 - Tests: smoke 370 checks PASS, bot 15/15 levels 3 stars. Render check
   re-run for the version bump (menu v0.13.0, full campaign sweep).
+
+## Block 14 — 2026-11-20 08:00 Asia/Bangkok (v0.14.0)
+
+Theme: GitHub Pages verify + perf + accessibility.
+
+- **FPS guard (#46):** a frame-time EMA in `physics.js`
+  (`createPerfGuard`, pure and Node-testable) steps the quality down
+  after 1s above a 24ms EMA and back up after 3s under 14ms — four
+  levels (pixel ratio 2 → 1.5 → 1.25 → 1, particle scale 1 → 0.75 →
+  0.5 → 0.35), with hysteresis so it never flaps. `game.js` feeds it
+  every animation frame and applies a level change to the renderer and
+  the burst/confetti budgets; `__orbit.perfState()` reports the EMA,
+  level, applied pixel ratio and step counts, and `testPerf()` feeds
+  synthetic frame times for the render check. Corrupted frame times
+  (NaN / infinite / negative) are ignored.
+- **Settings toggles, completed (#44):** reduce-motion and music
+  checkboxes join the volume slider in the menu and the pause menu —
+  one handler per checkbox, all four synced, persisted in
+  `nor-settings`. Reduce motion defaults to the OS
+  `prefers-reduced-motion` setting on a first visit. It zeroes screen
+  shake at the source, skips shockwave rings and confetti, and holds
+  the predicted-end marker steady; the sound and the small particle
+  burst still fire so every event reads. The music toggle stops the
+  scheduler when off (SFX keep playing) and restarts it when on.
+- **Accessibility pass (#50):** a visually hidden live region
+  (`#sr-status`, `role="status"`, `aria-live="polite"`) announces
+  level starts, collects, lost shots, wins and failures, so the game
+  is playable by ear. Every interactive element now shows the same
+  visible cyan focus outline (`:focus-visible` on buttons, icon
+  buttons, level buttons, sliders, checkboxes and inputs), and a
+  `prefers-reduced-motion` media query kills CSS transitions. Muted
+  text (#9aa7c7 on #070313, 8.5:1) already clears WCAG AA.
+- Also fixed: the `game.js` header comment still said v0.11.0 (the
+  Block 13 nit) — now v0.14.0 everywhere.
+- Tests: smoke 383 checks PASS (13 new: guard thresholds, hold
+  behaviour, step down/up, clamping, corrupted frames), bot 15/15
+  levels 3 stars. Render check re-run for the version bump (menu
+  v0.14.0, live-region announcement, focus/reduced-motion CSS,
+  reduce-motion zero-trauma probe, music toggle, FPS guard step
+  down/up, full campaign sweep).
