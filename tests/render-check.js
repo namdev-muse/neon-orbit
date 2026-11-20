@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.16.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.17.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -72,6 +72,13 @@
 // completing level 1 in one shot banks five achievements with lifetime
 // stats in a versioned (v2) save; My Stats shows the lifetime totals;
 // Reset Progress (two clicks) wipes the whole save back to fresh.
+// Block 17 additions (audio polish + music variation): the audio settings
+// panel — an SFX toggle, a music style cycler (Nebula / Pulse / Deep
+// Field) and a reduce-flashing toggle in the menu and pause menu; a
+// fullscreen red crash flash, rate-limited to 3/s and suppressed under
+// reduce flashing; and a +100 gravity-assist bonus per slingshot, shown
+// in the HUD, on the level-complete screen and as a best per level in
+// My Stats (see the audio block, the crash test and the grazing test).
 // Timeout note (Block 12): the fullscreen nebula shader doubles the
 // frame cost under swiftshader (in-level ~8fps, game time ~0.36x real
 // time), so every game-time-bound wait in this file uses a 30s timeout
@@ -256,11 +263,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.16.0') throw new Error(`expected version 0.16.0, got ${version}`);
+  if (version !== '0.17.0') throw new Error(`expected version 0.17.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.16.0')) throw new Error('menu version v0.16.0 missing');
+  if (!menuText.includes('v0.17.0')) throw new Error('menu version v0.17.0 missing');
   if (!menuText.includes('/ 36')) throw new Error('menu total stars should be / 36 (12 levels)');
-  console.log('render-check: menu renders with v0.16.0');
+  console.log('render-check: menu renders with v0.17.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -349,6 +356,10 @@ try {
   const statsFirstRow = await page.evaluate(() => document.querySelector('#stats-body tr').textContent);
   if (!statsFirstRow.includes('First Light') || !statsFirstRow.includes('☆☆☆')) {
     throw new Error(`stats first row wrong: ${statsFirstRow}`);
+  }
+  const statsHeader = await page.evaluate(() => document.querySelector('#stats-table thead tr').textContent);
+  if (!statsHeader.includes('Bonus')) {
+    throw new Error(`stats table should have a Bonus column, got: ${statsHeader}`);
   }
   console.log('render-check: My Stats shows 12 rows, 0/36 stars, daily + endless + time attack bests');
   await page.click('#btn-stats-close');
@@ -527,6 +538,38 @@ try {
   console.log('render-check: volume slider sets 0.3 live, persists, and syncs to the menu slider');
   await page.click('#btn-resume');
   await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+
+  // Block 17 (#36): the audio settings panel — the music style cycler
+  // steps nebula -> pulse -> deep field -> nebula (and the menu label
+  // follows), and the SFX toggle persists and syncs to both panels.
+  const style0 = await page.evaluate(() => window.__orbit.audioState().musicStyle);
+  if (style0 !== 'nebula') throw new Error(`default music style should be nebula, got ${style0}`);
+  const style1 = await page.evaluate(() => window.__orbit.cycleMusicStyle());
+  const style2 = await page.evaluate(() => window.__orbit.cycleMusicStyle());
+  const style3 = await page.evaluate(() => window.__orbit.cycleMusicStyle());
+  if (style1 !== 'pulse' || style2 !== 'deep' || style3 !== 'nebula') {
+    throw new Error(`music style cycler should step pulse/deep/nebula, got ${style1}/${style2}/${style3}`);
+  }
+  const styleLabel = await page.evaluate(() => document.getElementById('music-style-label-menu').textContent);
+  if (styleLabel !== 'Nebula') {
+    throw new Error(`menu style label should read Nebula after cycling back, got ${styleLabel}`);
+  }
+  const styleStored = await page.evaluate(() => JSON.parse(window.localStorage.getItem('nor-settings') || '{}').musicStyle);
+  if (styleStored !== 'nebula') throw new Error(`music style should persist as nebula, got ${styleStored}`);
+  await page.evaluate(() => window.__orbit.setSetting('sfx', false));
+  const sfxOff = await page.evaluate(() => ({
+    sfx: window.__orbit.settingsState().sfx,
+    box: document.getElementById('sfx-toggle-menu').checked,
+    stored: JSON.parse(window.localStorage.getItem('nor-settings') || '{}').sfx,
+  }));
+  if (sfxOff.sfx !== false || sfxOff.box !== false || sfxOff.stored !== false) {
+    throw new Error(`SFX toggle should persist sfx=false and sync the checkbox: ${JSON.stringify(sfxOff)}`);
+  }
+  await page.evaluate(() => window.__orbit.setSetting('sfx', true));
+  if ((await page.evaluate(() => window.__orbit.settingsState().sfx)) !== true) {
+    throw new Error('SFX toggle should turn back on');
+  }
+  console.log('render-check: music style cycler steps pulse/deep/nebula, SFX toggle persists and syncs');
 
   // Block 14: accessibility + perf. Start from a fresh level 1 so the
   // two corrupted shots below have a full budget, and hand a fresh level
@@ -987,17 +1030,28 @@ try {
   // large-tier trauma (>= 0.7) and a real hit-stop that then restores.
   await page.evaluate(() => window.__orbit.selectLevel(4));
   await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  // Block 17 (#36): SFX off for this crash — the sound must still record
+  // in lastSfx even though nothing plays.
+  await page.evaluate(() => window.__orbit.setSetting('sfx', false));
   await page.evaluate(() => {
     window.__orbit.aim(0, 1.0);
     window.__orbit.launch();
   });
   // Read trauma atomically with the hit-stop check: the crash's 0.12s
   // freeze decays trauma at 1.4/s, so a second round-trip after the
-  // wait would read a decayed value on a slow headless frame.
+  // wait would read a decayed value on a slow headless frame. The flash
+  // count and last SFX ride the same atomic read: both fire in the same
+  // synchronous feedback() call as the hit-stop, so they are already
+  // latched when the freeze is visible.
   const crashHandle = await page.waitForFunction(
     () => {
       const s = window.__orbit.feedbackState();
-      return s.hitStopActive ? s : null;
+      if (!s.hitStopActive) return null;
+      return {
+        ...s,
+        lastSfx: window.__orbit.audioState().lastSfx,
+        flashes: window.__orbit.flashState().flashes,
+      };
     },
     null, { polling: 20, timeout: 30000 },
   );
@@ -1007,7 +1061,13 @@ try {
   }
   if (crashState.hitStopToken < 1) throw new Error('crash should take a hit-stop token');
   if (crashState.shockwavesActive < 1) throw new Error('crash should fire a shockwave ring');
-  console.log(`render-check: crash fired large trauma ${crashState.trauma.toFixed(2)} + hit-stop + shockwave`);
+  if (crashState.lastSfx !== 'crash') {
+    throw new Error(`crash SFX should record even with SFX off, got ${crashState.lastSfx}`);
+  }
+  if (crashState.flashes < 1) {
+    throw new Error(`crash should fire the fullscreen flash, got ${crashState.flashes}`);
+  }
+  console.log(`render-check: crash fired large trauma ${crashState.trauma.toFixed(2)} + hit-stop + shockwave + flash (SFX off, still recorded)`);
   await page.waitForFunction(
     () => !window.__orbit.feedbackState().hitStopActive,
     null, { polling: 20, timeout: 5000 },
@@ -1017,6 +1077,32 @@ try {
     () => window.__orbit.state.shotsUsed >= 1,
     null, { timeout: 30000 },
   );
+  await page.evaluate(() => window.__orbit.setSetting('sfx', true));
+
+  // Block 17 (#32): with reduce flashing on, a second crash fires no
+  // flash — the suppression counter rises instead — and turning it off
+  // restores the flash. The level is re-selected so the shot budget is fresh.
+  const flashBefore = await page.evaluate(() => window.__orbit.flashState());
+  await page.evaluate(() => window.__orbit.setSetting('reduceFlashing', true));
+  await page.evaluate(() => window.__orbit.selectLevel(4));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.evaluate(() => {
+    window.__orbit.aim(0, 1.0);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 1,
+    null, { timeout: 30000 },
+  );
+  const flashAfter = await page.evaluate(() => window.__orbit.flashState());
+  if (flashAfter.flashes !== flashBefore.flashes) {
+    throw new Error(`reduce flashing should suppress the crash flash, flashes ${flashBefore.flashes} -> ${flashAfter.flashes}`);
+  }
+  if (flashAfter.suppressed <= flashBefore.suppressed) {
+    throw new Error(`reduce flashing should count the suppression, suppressed ${flashBefore.suppressed} -> ${flashAfter.suppressed}`);
+  }
+  await page.evaluate(() => window.__orbit.setSetting('reduceFlashing', false));
+  console.log(`render-check: reduce flashing suppresses the crash flash (${flashAfter.suppressed} suppressed)`);
 
   // Block 4: the grazing Level 4 line (-20deg, power 0.3) collects the
   // target and credits a slingshot near-miss as it skims the planet.
@@ -1039,10 +1125,48 @@ try {
     throw new Error(`slingshot should trigger a slow-mo dip, slowMoCount=${slowMo.slowMoCount}`);
   }
   console.log(`render-check: slingshot triggered a near-miss slow-mo dip (slowMoCount ${slowMo.slowMoCount})`);
+  // Block 17 (#4): the same slingshot banks a +100 gravity-assist bonus,
+  // shown in the HUD chip while the shot is still resolving.
+  const assistMid = await page.evaluate(() => ({
+    assist: window.__orbit.assistState(),
+    hudHidden: document.getElementById('hud-bonus').classList.contains('hidden'),
+    hudText: document.getElementById('hud-bonus').textContent,
+  }));
+  if (assistMid.assist.bonus < 100 || assistMid.assist.count < 1) {
+    throw new Error(`slingshot should bank a +100 assist bonus, got ${JSON.stringify(assistMid.assist)}`);
+  }
+  if (assistMid.hudHidden || !assistMid.hudText.includes('+100')) {
+    throw new Error(`HUD should show the assist bonus, got hidden=${assistMid.hudHidden} text=${assistMid.hudText}`);
+  }
+  console.log(`render-check: slingshot banked a +100 gravity-assist bonus (HUD: "${assistMid.hudText}")`);
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
     null, { timeout: 30000 },
   );
+
+  // Block 17 (#4): the grazing line collects level 4's only target, so
+  // the complete screen shows the banked bonus and the save records the
+  // per-level best; My Stats shows it in the new Bonus column.
+  await page.waitForFunction(() => window.__orbit.state.phase === 'complete', null, { timeout: 30000 });
+  const bonusText = await page.textContent('#complete-bonus');
+  if (!bonusText.includes('+100')) {
+    throw new Error(`complete screen should show the assist bonus, got: ${bonusText}`);
+  }
+  const bestBonus = await page.evaluate(() => JSON.parse(window.localStorage.getItem('nor-stars') || '{}').bestBonus);
+  if (!bestBonus || (bestBonus['4'] || 0) < 100) {
+    throw new Error(`best bonus for level 4 not saved: ${JSON.stringify(bestBonus)}`);
+  }
+  console.log(`render-check: level complete shows "${bonusText.trim()}", best bonus +${bestBonus['4']} saved`);
+  await quitToMenu(page);
+  await page.click('#btn-stats');
+  await page.waitForFunction(() => !document.getElementById('stats').classList.contains('hidden'), null, { timeout: 5000 });
+  const statsRow4 = await page.evaluate(() => document.querySelectorAll('#stats-body tr')[3].textContent);
+  if (!statsRow4.includes('+100')) {
+    throw new Error(`stats row for level 4 should show the +100 best bonus, got: ${statsRow4}`);
+  }
+  console.log('render-check: My Stats Bonus column shows +100 for level 4');
+  await page.click('#btn-stats-close');
+  await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden'), null, { timeout: 5000 });
 
   // Block 12 (#28/#29/#30): visual polish — nebula background, planet
   // atmosphere glow, fading comet trail ribbon, level-complete confetti.

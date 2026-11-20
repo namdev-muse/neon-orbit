@@ -14,6 +14,9 @@ import {
   clampZoom, ZOOM_MIN, ZOOM_MAX, isTapGesture, TAP_MAX_MS, TAP_MAX_PX, focusStep,
   createPerfGuard, PERF_LEVELS, PERF_SLOW_MS, PERF_FAST_MS,
   slowMoScale, SLOW_MO_SCALE, SLOW_MO_MS, zenLevel, ZEN_ID,
+  MUSIC_STYLES, musicStyleById, nextMusicStyleId,
+  flashAllowed, FLASH_MIN_INTERVAL_MS,
+  GRAVITY_ASSIST_POINTS, gravityAssistPoints,
 } from '../physics.js';
 
 let passed = 0, failed = 0;
@@ -144,7 +147,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.16.0', VERSION === '0.16.0');
+  check('physics version is 0.17.0', VERSION === '0.17.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -1006,6 +1009,60 @@ check('level not complete with targets left',
     (() => { const s = parseSave('{"stats":{"shots":-5,"collects":9999999,"wins":"many"}}'); return s.stats.shots === 0 && s.stats.collects === 999999 && s.stats.wins === 0; })());
   check('save drops stats for unknown keys',
     Object.keys(parseSave('{"stats":{"shots":3,"cheat":99}}').stats).length === 11);
+}
+
+// --- Block 17: audio settings (#36) + crash flash (#32) + gravity-assist bonus (#4) ---
+{
+  const WAVES = ['sine', 'triangle', 'square', 'sawtooth'];
+  check('three music styles with unique ids and names', MUSIC_STYLES.length === 3
+    && new Set(MUSIC_STYLES.map((s) => s.id)).size === 3
+    && new Set(MUSIC_STYLES.map((s) => s.name)).size === 3);
+  check('every music style has 4 roots, 4 arp steps, a 150..400ms step and valid waves',
+    MUSIC_STYLES.every((s) => s.roots.length === 4 && s.arp.length === 4
+      && s.stepMs >= 150 && s.stepMs <= 400
+      && WAVES.includes(s.bass) && WAVES.includes(s.arpType)
+      && s.bassVol > 0 && s.bassVol <= 0.1 && s.arpVol > 0 && s.arpVol <= 0.1));
+  check('nebula is the original Block 5 sound (roots, arp, 250ms step)',
+    (() => {
+      const s = musicStyleById('nebula');
+      return JSON.stringify(s.roots) === JSON.stringify([55, 43.65, 65.41, 49])
+        && JSON.stringify(s.arp) === JSON.stringify([2, 3, 4, 3]) && s.stepMs === 250;
+    })());
+  check('musicStyleById falls back to nebula for an unknown id',
+    musicStyleById('nope').id === 'nebula' && musicStyleById().id === 'nebula');
+  check('music style cycler steps nebula -> pulse -> deep -> nebula',
+    nextMusicStyleId('nebula') === 'pulse' && nextMusicStyleId('pulse') === 'deep'
+    && nextMusicStyleId('deep') === 'nebula' && nextMusicStyleId('nope') === 'nebula');
+  check('crash flash allows the first flash and one 333ms later',
+    flashAllowed(1000, -Infinity, false) && flashAllowed(1333, 1000, false)
+    && FLASH_MIN_INTERVAL_MS === 333);
+  check('crash flash blocks a second flash inside 333ms',
+    !flashAllowed(1000, 900, false) && !flashAllowed(1332, 1000, false));
+  check('crash flash is suppressed under reduce flashing',
+    !flashAllowed(1000, -Infinity, true));
+  check('crash flash rejects a corrupted now but allows an unknown last flash',
+    !flashAllowed(NaN, -Infinity, false) && flashAllowed(1000, NaN, false));
+  check('gravity-assist bonus is +100 per slingshot',
+    gravityAssistPoints(0) === 0 && gravityAssistPoints(1) === 100
+    && gravityAssistPoints(3) === 300 && GRAVITY_ASSIST_POINTS === 100);
+  check('gravity-assist bonus clamps bad counts to 0',
+    gravityAssistPoints(-2) === 0 && gravityAssistPoints(NaN) === 0
+    && gravityAssistPoints(2.7) === 200);
+  // Best-bonus save round-trip (#4): per-level bests persist, clamp to
+  // 0..9999, drop non-campaign levels, and a v1 save starts empty.
+  const withBonus = defaultSave();
+  withBonus.bestBonus = { 1: 300, 4: 100 };
+  const bonusBack = parseSave(serializeSave(withBonus));
+  check('save round-trips best gravity-assist bonus',
+    bonusBack.bestBonus[1] === 300 && bonusBack.bestBonus[4] === 100);
+  check('save clamps best bonus to 0..9999 and drops non-campaign levels',
+    (() => {
+      const s = parseSave('{"bestBonus":{"1":99999,"13":100,"2":-50,"3":"many"}}');
+      return s.bestBonus[1] === 9999 && !('13' in s.bestBonus)
+        && s.bestBonus[2] === 0 && !('3' in s.bestBonus);
+    })());
+  check('v1 save migrates best bonus to empty',
+    Object.keys(parseSave('{"stars":{"1":3}}').bestBonus).length === 0);
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);
