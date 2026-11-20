@@ -55,6 +55,12 @@
 // animates, every planet wears a fresnel atmosphere halo, the comet's
 // trail is a fading glow ribbon mid-flight, and completing a level
 // bursts 3D confetti shards from the collected targets.
+// Block 14 additions (perf + accessibility): an FPS guard steps the
+// pixel ratio and particle budget down on sustained slow frames and back
+// up when fast; reduce-motion and music toggles live in the menu and the
+// pause menu and persist; a screen-reader live region announces level
+// starts, collects, lost shots, wins and failures; every interactive
+// element shows a visible cyan focus outline.
 // Timeout note (Block 12): the fullscreen nebula shader doubles the
 // frame cost under swiftshader (in-level ~8fps, game time ~0.36x real
 // time), so every game-time-bound wait in this file uses a 30s timeout
@@ -239,11 +245,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.13.0') throw new Error(`expected version 0.13.0, got ${version}`);
+  if (version !== '0.14.0') throw new Error(`expected version 0.14.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.13.0')) throw new Error('menu version v0.13.0 missing');
+  if (!menuText.includes('v0.14.0')) throw new Error('menu version v0.14.0 missing');
   if (!menuText.includes('/ 36')) throw new Error('menu total stars should be / 36 (12 levels)');
-  console.log('render-check: menu renders with v0.13.0');
+  console.log('render-check: menu renders with v0.14.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -444,6 +450,145 @@ try {
   if (vol.stored !== 0.3) throw new Error(`volume should persist as 0.3, got ${vol.stored}`);
   console.log('render-check: volume slider sets 0.3 live, persists, and syncs to the menu slider');
   await page.click('#btn-resume');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+
+  // Block 14: accessibility + perf. Start from a fresh level 1 so the
+  // two corrupted shots below have a full budget, and hand a fresh level
+  // back to the last-shot test afterwards.
+  await page.evaluate(() => window.__orbit.selectLevel(1));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+
+  // The live region announces the level start for screen readers.
+  const announced = await page.evaluate(() => window.__orbit.settingsState().lastAnnouncement);
+  if (!announced.includes('Level 1 — First Light') || !announced.includes('Par 2')) {
+    throw new Error(`live region should announce the level start, got: ${announced}`);
+  }
+  const liveRegion = await page.evaluate(() => {
+    const el = document.getElementById('sr-status');
+    return { role: el.getAttribute('role'), live: el.getAttribute('aria-live') };
+  });
+  if (liveRegion.role !== 'status' || liveRegion.live !== 'polite') {
+    throw new Error(`live region attributes wrong: ${JSON.stringify(liveRegion)}`);
+  }
+  console.log(`render-check: live region announces "${announced}" (role=status, aria-live=polite)`);
+
+  // The stylesheet carries a visible focus outline and a reduced-motion
+  // media query (read as served text — :focus-visible only matches on
+  // real keyboard focus, which a headless click cannot fake).
+  const cssText = await page.evaluate(async () => (await fetch('style.css')).text());
+  if (!cssText.includes('outline: 2px solid var(--cyan)')) {
+    throw new Error('stylesheet is missing the visible focus outline');
+  }
+  if (!cssText.includes('@media (prefers-reduced-motion: reduce)')) {
+    throw new Error('stylesheet is missing the reduced-motion media query');
+  }
+  if (!cssText.includes('.sr-only')) throw new Error('stylesheet is missing the .sr-only class');
+  console.log('render-check: stylesheet has visible focus outlines, .sr-only, and a reduced-motion query');
+
+  // Reduce motion (pause menu): flip it on, check it persists and syncs
+  // to the menu checkbox, then prove it zeroes shake — a corrupted
+  // flight ends as a lost shot, which normally adds 0.15 trauma.
+  await page.keyboard.press('p');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'paused', null, { timeout: 5000 });
+  await page.click('#reduce-motion-pause');
+  const rmOn = await page.evaluate(() => ({
+    setting: window.__orbit.settingsState().reduceMotion,
+    menuChecked: document.getElementById('reduce-motion-menu').checked,
+    stored: JSON.parse(window.localStorage.getItem('nor-settings') || '{}').reduceMotion,
+  }));
+  if (!rmOn.setting || !rmOn.menuChecked || rmOn.stored !== true) {
+    throw new Error(`reduce-motion toggle failed: ${JSON.stringify(rmOn)}`);
+  }
+  await page.click('#btn-resume');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.evaluate(() => {
+    window.__orbit.aim(Math.PI / 2, 1.0);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
+  await page.evaluate(() => window.__orbit.testCorrupt('flight'));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 30000 });
+  const rmShot = await page.evaluate(() => ({
+    peakTrauma: window.__orbit.feedbackState().peakTrauma,
+    announcement: window.__orbit.settingsState().lastAnnouncement,
+  }));
+  if (rmShot.peakTrauma !== 0) {
+    throw new Error(`reduce motion should keep peak trauma at 0, got ${rmShot.peakTrauma}`);
+  }
+  if (!rmShot.announcement.includes('out of bounds')) {
+    throw new Error(`lost shot should announce out of bounds, got: ${rmShot.announcement}`);
+  }
+  console.log('render-check: reduce motion on — lost shot adds 0 trauma and announces "out of bounds"');
+
+  // Same corrupted shot with reduce motion off: trauma must register.
+  await page.keyboard.press('p');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'paused', null, { timeout: 5000 });
+  await page.click('#reduce-motion-pause');
+  if ((await page.evaluate(() => window.__orbit.settingsState().reduceMotion))) {
+    throw new Error('reduce-motion toggle should turn off on second click');
+  }
+  await page.click('#btn-resume');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  await page.evaluate(() => {
+    window.__orbit.aim(Math.PI / 2, 1.0);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(() => window.__orbit.state.phase === 'fly', null, { timeout: 5000 });
+  await page.evaluate(() => window.__orbit.testCorrupt('flight'));
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 30000 });
+  const normalShot = await page.evaluate(() => window.__orbit.feedbackState().peakTrauma);
+  if (normalShot < 0.15) {
+    throw new Error(`reduce motion off should let the lost shot add trauma, got peak ${normalShot}`);
+  }
+  console.log(`render-check: reduce motion off — same lost shot peaks at trauma ${normalShot}`);
+
+  // Music toggle (pause menu): off stops the scheduler, on restarts it.
+  await page.keyboard.press('p');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'paused', null, { timeout: 5000 });
+  await page.click('#music-toggle-pause');
+  const musicOff = await page.evaluate(() => ({
+    music: window.__orbit.settingsState().music,
+    playing: window.__orbit.audioState().musicPlaying,
+    stored: JSON.parse(window.localStorage.getItem('nor-settings') || '{}').music,
+    menuChecked: document.getElementById('music-toggle-menu').checked,
+  }));
+  if (musicOff.music || musicOff.playing || musicOff.stored !== false || musicOff.menuChecked) {
+    throw new Error(`music toggle off failed: ${JSON.stringify(musicOff)}`);
+  }
+  await page.click('#music-toggle-pause');
+  const musicOn = await page.evaluate(() => ({
+    music: window.__orbit.settingsState().music,
+    playing: window.__orbit.audioState().musicPlaying,
+  }));
+  if (!musicOn.music || !musicOn.playing) {
+    throw new Error(`music toggle on failed: ${JSON.stringify(musicOn)}`);
+  }
+  console.log('render-check: music toggle stops the scheduler when off and restarts it when on');
+  await page.click('#btn-resume');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+
+  // FPS guard: the guard reports a sane state; feeding it slow frames
+  // steps the quality down (pixel ratio drops), fast frames step it back
+  // to full quality. testPerf runs synchronously, so no real frame can
+  // interleave and skew the EMA mid-feed.
+  const perfBefore = await page.evaluate(() => window.__orbit.perfState());
+  if (!(perfBefore.emaMs > 0) || perfBefore.level < 0 || perfBefore.level > 3
+    || ![2, 1.5, 1.25, 1].includes(perfBefore.targetPixelRatio)) {
+    throw new Error(`perf state looks wrong: ${JSON.stringify(perfBefore)}`);
+  }
+  const slowLevel = await page.evaluate(() => window.__orbit.testPerf(30, 150));
+  const perfSlow = await page.evaluate(() => window.__orbit.perfState());
+  if (slowLevel < 1 || perfSlow.targetPixelRatio >= 2 || perfSlow.particleScale >= 1) {
+    throw new Error(`slow frames should step quality down, got level ${slowLevel}: ${JSON.stringify(perfSlow)}`);
+  }
+  const fastLevel = await page.evaluate(() => window.__orbit.testPerf(8, 1500));
+  const perfFast = await page.evaluate(() => window.__orbit.perfState());
+  if (fastLevel !== 0 || perfFast.targetPixelRatio !== 2 || perfFast.particleScale !== 1) {
+    throw new Error(`fast frames should recover full quality, got level ${fastLevel}: ${JSON.stringify(perfFast)}`);
+  }
+  console.log(`render-check: FPS guard steps down to level ${slowLevel} on slow frames (target pixel ratio ${perfSlow.targetPixelRatio}) and back to 0 on fast frames (EMA ${perfFast.emaMs}ms, ${perfFast.stepsDown} down / ${perfFast.stepsUp} up)`);
+  // Hand the last-shot test a fresh level 1.
+  await page.evaluate(() => window.__orbit.selectLevel(1));
   await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
 
   // Block 5: last-shot warning — burn 3 straight-up shots (each flies out
@@ -648,12 +793,20 @@ try {
   if (info12.movingTargets !== 2) {
     throw new Error(`level 12 should have 2 moving targets, got ${info12.movingTargets}`);
   }
+  // Drift is measured over 0.8s of GAME time, not wall time: under
+  // swiftshader the game runs at ~0.25x real time, so a fixed 1.2s wall
+  // wait only advances ~0.3 game-seconds and the 0.3-unit threshold
+  // flakes with host load (Block 14: measured 0.26 on a slow run).
+  const t0 = await page.evaluate(() => window.__orbit.info().levelTime);
   const tPosA = await page.evaluate(() => window.__orbit.info().targetPositions);
-  await page.waitForTimeout(1200);
+  await page.waitForFunction(
+    (start) => window.__orbit.info().levelTime - start >= 0.8,
+    t0, { timeout: 30000 },
+  );
   const tPosB = await page.evaluate(() => window.__orbit.info().targetPositions);
   const tMoved = Math.hypot(tPosB[0][0] - tPosA[0][0], tPosB[0][1] - tPosA[0][1]);
-  if (tMoved < 0.3) throw new Error(`moving target did not move (moved ${tMoved.toFixed(2)} in 1.2s)`);
-  console.log(`render-check: level 12 Moving Stars target drifted ${tMoved.toFixed(2)} units in 1.2s`);
+  if (tMoved < 0.5) throw new Error(`moving target did not move (moved ${tMoved.toFixed(2)} in 0.8 game-seconds)`);
+  console.log(`render-check: level 12 Moving Stars target drifted ${tMoved.toFixed(2)} units in 0.8 game-seconds`);
   await playLevelToCompletion(page, 'moving stars');
   console.log('render-check: level 12 Moving Stars completes');
 

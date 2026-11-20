@@ -11,6 +11,7 @@ import {
   endlessDifficulty, generateLevel, registerGeneratedLevel, solveShot, solveLevel,
   TIME_ATTACK_LEVEL_IDS, TIME_ATTACK_SECONDS, formatClock,
   clampZoom, ZOOM_MIN, ZOOM_MAX, isTapGesture, TAP_MAX_MS, TAP_MAX_PX, focusStep,
+  createPerfGuard, PERF_LEVELS, PERF_SLOW_MS, PERF_FAST_MS,
 } from '../physics.js';
 
 let passed = 0, failed = 0;
@@ -141,7 +142,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.13.0', VERSION === '0.13.0');
+  check('physics version is 0.14.0', VERSION === '0.14.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -784,6 +785,76 @@ check('level not complete with targets left',
     check('simulateLaunch outcome is a known string for a normal launch',
       ['collected', 'partial', 'crash', 'swallowed', 'lost', 'timeout', 'invalid', 'none'].includes(sim.outcome));
   }
+}
+
+// --- FPS guard (Block 14, #46) ---
+{
+  check('perf levels step pixel ratio down and particle scale down',
+    PERF_LEVELS.length === 4
+    && PERF_LEVELS[0].pixelRatio === 2 && PERF_LEVELS[0].particleScale === 1
+    && PERF_LEVELS[3].pixelRatio === 1 && PERF_LEVELS[3].particleScale === 0.35
+    && PERF_LEVELS.every((l, i) => i === 0
+      || (l.pixelRatio <= PERF_LEVELS[i - 1].pixelRatio && l.particleScale <= PERF_LEVELS[i - 1].particleScale)));
+  check('perf thresholds are sane (slow 24ms, fast 14ms)',
+    PERF_SLOW_MS === 24 && PERF_FAST_MS === 14 && PERF_FAST_MS < PERF_SLOW_MS);
+
+  const g = createPerfGuard();
+  check('perf guard starts at level 0 with no EMA',
+    g.level === 0 && g.emaMs === 0 && g.stepsDown === 0 && g.stepsUp === 0);
+  check('perf guard pixelRatio/particleScale match level 0',
+    g.pixelRatio() === 2 && g.particleScale() === 1);
+
+  // Steady 60fps frames never step down, even over 10 simulated seconds.
+  for (let i = 0; i < 600; i++) g.update(16.7);
+  check('perf guard stays at level 0 on steady 60fps',
+    g.level === 0 && g.stepsDown === 0 && Math.abs(g.emaMs - 16.7) < 0.5);
+
+  // A brief slow spike (under the 1s hold) does not step down.
+  const g2 = createPerfGuard();
+  for (let i = 0; i < 30; i++) g2.update(16.7);
+  for (let i = 0; i < 20; i++) g2.update(40); // 0.8s of slow frames
+  check('perf guard does not step down on a brief slow spike',
+    g2.level === 0 && g2.stepsDown === 0);
+
+  // Sustained slow frames step down one level per second of slowness.
+  for (let i = 0; i < 60; i++) g2.update(40); // another 2.4s slow
+  check('perf guard steps down on sustained slow frames',
+    g2.level >= 1 && g2.stepsDown >= 1);
+  check('perf guard level 1 lowers pixel ratio and particle scale',
+    g2.pixelRatio() === PERF_LEVELS[g2.level].pixelRatio
+    && g2.particleScale() === PERF_LEVELS[g2.level].particleScale
+    && g2.pixelRatio() < 2 && g2.particleScale() < 1);
+
+  // Sustained slow frames bottom out at the last level, never beyond it.
+  for (let i = 0; i < 600; i++) g2.update(50);
+  check('perf guard clamps at the lowest level',
+    g2.level === PERF_LEVELS.length - 1 && g2.pixelRatio() === 1);
+
+  // Sustained fast frames step back up (3s hold per level: 375 frames
+  // at 8ms each, plus ~20 frames for the EMA to fall under 14ms).
+  const before = g2.level;
+  for (let i = 0; i < 500; i++) g2.update(8);
+  check('perf guard steps back up on sustained fast frames',
+    g2.level < before && g2.stepsUp >= 1);
+  for (let i = 0; i < 1500; i++) g2.update(8);
+  check('perf guard recovers to level 0 on sustained fast frames',
+    g2.level === 0 && g2.pixelRatio() === 2 && g2.particleScale() === 1);
+
+  // Corrupted frame times never move the guard.
+  const g3 = createPerfGuard();
+  for (let i = 0; i < 10; i++) g3.update(16.7);
+  const emaBefore = g3.emaMs;
+  g3.update(NaN);
+  g3.update(Infinity);
+  g3.update(-5);
+  g3.update('fast');
+  check('perf guard ignores NaN / infinite / negative / non-number frames',
+    g3.level === 0 && g3.emaMs === emaBefore && g3.stepsDown === 0);
+  // A zero-ms frame is finite and feeds the EMA (a paused tab's first
+  // frame); it must not crash or step the guard.
+  g3.update(0);
+  check('perf guard accepts a 0ms frame without stepping',
+    g3.level === 0 && Number.isFinite(g3.emaMs));
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);
