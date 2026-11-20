@@ -6,7 +6,7 @@
 import {
   LEVELS, shotBudget, starsForShots, solveLevel, levelById,
   dateSeed, dailyDifficulty, parseSeedParam, generateLevel,
-  TIME_ATTACK_LEVEL_IDS,
+  TIME_ATTACK_LEVEL_IDS, zenLevel,
 } from '../physics.js';
 
 let failures = 0;
@@ -45,6 +45,12 @@ const endless = generateLevel((424242 + 3 * 7919) >>> 0, 3, 902);
 endless.name = 'Endless Round 3';
 playLevel(endless, shotBudget(endless), { coarse: true, t0s: [0, 1.5, 3, 4.5] });
 
+// Zen Sandbox (Block 15, #21): the handcrafted playground must be
+// solvable like any level — the bot plays it on a 6-shot budget (its
+// par is nominal; the mode itself never runs out of shots).
+const zen = zenLevel();
+playLevel(zen, 6, { coarse: true });
+
 // Time Attack set (Block 10): the five timed levels must all complete
 // within budget — a run that cannot be finished is not a mode.
 let taShots = 0;
@@ -65,4 +71,4 @@ if (failures > 0) {
   console.error(`\nbot: FAILED (${failures} level(s))`);
   process.exit(1);
 }
-console.log(`\nbot: all ${LEVELS.length + 3} levels completed within budget, >= 1 star each`);
+console.log(`\nbot: all ${LEVELS.length + 4} levels completed within budget, >= 1 star each`);

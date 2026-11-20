@@ -1,6 +1,6 @@
 // Neon Orbit — headless Chromium render check.
 // Serves the game dir over local HTTP, loads it in headless Chromium, and
-// asserts: menu renders with v0.13.0, PLAY starts level 1, a real mouse
+// asserts: menu renders with v0.15.0, PLAY starts level 1, a real mouse
 // drag-aim + launch moves the comet and uses a shot, zero console errors
 // and zero page errors, and a WebGL context exists. Also checks the Block 2
 // additions: level cards show par + star thresholds, the power meter is
@@ -61,6 +61,11 @@
 // pause menu and persist; a screen-reader live region announces level
 // starts, collects, lost shots, wins and failures; every interactive
 // element shows a visible cyan focus outline.
+// Block 15 additions (extra modes + juice): Zen Sandbox — unlimited
+// shots, collected stars drift back onto the field, no fail state, the
+// session best is saved and shown in My Stats; and near-miss slow-mo —
+// a slingshot dips the time scale to 0.35x for 450ms (latched in
+// slowMoCount, skipped under reduce motion).
 // Timeout note (Block 12): the fullscreen nebula shader doubles the
 // frame cost under swiftshader (in-level ~8fps, game time ~0.36x real
 // time), so every game-time-bound wait in this file uses a 30s timeout
@@ -245,11 +250,11 @@ try {
 
   const version = await page.evaluate(() => window.__orbit.version);
   const menuText = await page.textContent('#menu');
-  if (version !== '0.14.0') throw new Error(`expected version 0.14.0, got ${version}`);
+  if (version !== '0.15.0') throw new Error(`expected version 0.15.0, got ${version}`);
   if (!menuText.includes('NEON ORBIT')) throw new Error('menu title missing');
-  if (!menuText.includes('v0.14.0')) throw new Error('menu version v0.14.0 missing');
+  if (!menuText.includes('v0.15.0')) throw new Error('menu version v0.15.0 missing');
   if (!menuText.includes('/ 36')) throw new Error('menu total stars should be / 36 (12 levels)');
-  console.log('render-check: menu renders with v0.14.0');
+  console.log('render-check: menu renders with v0.15.0');
 
   // Block 6: challenge-mode menu — Daily Orbit shows today's date, the
   // Endless Orbit button and the seed box are present.
@@ -258,6 +263,7 @@ try {
   }
   if (!menuText.includes('Endless Orbit')) throw new Error('endless button missing');
   if (!menuText.includes('Time Attack')) throw new Error('time attack button missing');
+  if (!menuText.includes('Zen Sandbox')) throw new Error('zen sandbox button missing');
   const seedPlaceholder = await page.getAttribute('#seed-input', 'placeholder');
   if (!seedPlaceholder || !seedPlaceholder.includes('Seed')) {
     throw new Error(`seed input missing, placeholder: ${seedPlaceholder}`);
@@ -955,6 +961,14 @@ try {
     null, { polling: 20, timeout: 30000 },
   );
   console.log('render-check: grazing Level 4 line credited a slingshot near-miss');
+  // Block 15 (#31): the same slingshot dips the time scale — the dip is
+  // latched in slowMoCount on the current shot, so it reads even after
+  // the 450ms window has closed.
+  const slowMo = await page.evaluate(() => window.__orbit.feedbackState());
+  if (slowMo.slowMoCount < 1) {
+    throw new Error(`slingshot should trigger a slow-mo dip, slowMoCount=${slowMo.slowMoCount}`);
+  }
+  console.log(`render-check: slingshot triggered a near-miss slow-mo dip (slowMoCount ${slowMo.slowMoCount})`);
   await page.waitForFunction(
     () => window.__orbit.state.shotsUsed >= 1 || window.__orbit.state.phase === 'complete',
     null, { timeout: 30000 },
@@ -1097,6 +1111,77 @@ try {
     throw new Error('time attack clock should keep running across levels');
   }
   console.log(`render-check: Time Attack level 1 complete (${taInfo2.timeAttackStars} star(s) banked), advanced to 2/5 with ${taInfo2.timeLeft.toFixed(1)}s left`);
+
+  // Block 15 (#21): Zen Sandbox — unlimited shots, respawning targets,
+  // no fail state, session best saved. The menu button starts it; the
+  // HUD shows ∞ shots; a solver shot collects a star; the star drifts
+  // back onto the field; and a deliberate miss still leaves the game in
+  // aim with no failed screen.
+  await quitToMenu(page);
+  const zenBtn = await page.textContent('#btn-zen');
+  if (!zenBtn || !zenBtn.includes('Zen Sandbox')) throw new Error('menu missing Zen Sandbox button');
+  await page.click('#btn-zen');
+  await page.waitForFunction(() => window.__orbit.state.phase === 'aim', null, { timeout: 5000 });
+  const zenHud = await page.textContent('#hud-level');
+  if (!zenHud.includes('Zen Sandbox')) throw new Error(`zen HUD wrong: ${zenHud}`);
+  const zenShots = await page.textContent('#hud-shots');
+  if (!zenShots.includes('∞')) throw new Error(`zen HUD should show unlimited shots, got: ${zenShots}`);
+  const zenPar = await page.textContent('#hud-par');
+  if (!zenPar.includes('no shot limit')) throw new Error(`zen HUD par wrong: ${zenPar}`);
+  const zenInfo = await page.evaluate(() => window.__orbit.challengeInfo());
+  if (zenInfo.mode !== 'zen') throw new Error(`challenge mode should be zen, got ${zenInfo.mode}`);
+  const zenInfinite = await page.evaluate(() => !Number.isFinite(window.__orbit.state.shotsLeft));
+  if (!zenInfinite) throw new Error('zen shot budget should be infinite');
+  let zenShot = null;
+  for (let p = 0; p < 30 && !zenShot; p++) {
+    zenShot = await page.evaluate(() => window.__orbit.solveShot());
+    if (!zenShot) await page.waitForTimeout(500);
+  }
+  if (!zenShot) throw new Error('zen: solver found no collecting line in 15s');
+  await page.waitForFunction(
+    (t0) => window.__orbit.info().levelTime >= t0 - 0.05,
+    zenShot.t0, { timeout: 20000 },
+  );
+  await page.evaluate((s) => {
+    window.__orbit.aim(s.angle, s.power);
+    window.__orbit.launch();
+  }, zenShot);
+  await page.waitForFunction(
+    () => window.__orbit.challengeInfo().zenCollected >= 1,
+    null, { timeout: 30000 },
+  );
+  console.log('render-check: Zen Sandbox solver shot collected a star (zenCollected 1+)');
+  await page.waitForFunction(
+    () => window.__orbit.state.targetsRemaining === 3,
+    null, { timeout: 30000 },
+  );
+  console.log('render-check: Zen Sandbox collected star drifted back onto the field (3 targets again)');
+  // The collecting flight must end back in aim (never complete / failed).
+  await page.waitForFunction(
+    () => window.__orbit.state.phase === 'aim',
+    null, { timeout: 30000 },
+  );
+  // A deliberate miss — straight up, out of bounds — still never fails.
+  await page.evaluate(() => {
+    window.__orbit.aim(Math.PI / 2, 1.0);
+    window.__orbit.launch();
+  });
+  await page.waitForFunction(
+    () => window.__orbit.state.shotsUsed >= 2 && window.__orbit.state.phase === 'aim',
+    null, { timeout: 30000 },
+  );
+  if (await page.isVisible('#failed')) throw new Error('zen must never show the failed screen');
+  const zenBest = await page.evaluate(() => JSON.parse(window.localStorage.getItem('nor-stars') || '{}').zenBest);
+  if (!zenBest || zenBest < 1) throw new Error(`zen best not recorded: ${zenBest}`);
+  console.log(`render-check: Zen Sandbox miss lost the shot without failing (2 shots used), zen best ${zenBest} saved`);
+  await quitToMenu(page);
+  await page.click('#btn-stats');
+  await page.waitForFunction(() => !document.getElementById('stats').classList.contains('hidden'), null, { timeout: 5000 });
+  const statsZen = await page.textContent('#stats-challenge');
+  if (!statsZen.includes('Zen best:')) throw new Error(`stats should show the zen best, got: ${statsZen}`);
+  console.log(`render-check: My Stats shows the zen best (${statsZen.trim().split(' · ').find((s) => s.startsWith('Zen best'))})`);
+  await page.click('#btn-stats-close');
+  await page.waitForFunction(() => !document.getElementById('menu').classList.contains('hidden'), null, { timeout: 5000 });
 
   // Block 8: touch, keyboard-only play, responsive + camera zoom.
   // Fresh load so the menu is untouched (Play focused, no shots spent).

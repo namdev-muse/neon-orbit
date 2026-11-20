@@ -12,6 +12,7 @@ import {
   TIME_ATTACK_LEVEL_IDS, TIME_ATTACK_SECONDS, formatClock,
   clampZoom, ZOOM_MIN, ZOOM_MAX, isTapGesture, TAP_MAX_MS, TAP_MAX_PX, focusStep,
   createPerfGuard, PERF_LEVELS, PERF_SLOW_MS, PERF_FAST_MS,
+  slowMoScale, SLOW_MO_SCALE, SLOW_MO_MS, zenLevel, ZEN_ID,
 } from '../physics.js';
 
 let passed = 0, failed = 0;
@@ -142,7 +143,7 @@ check('level not complete with targets left',
 
 // --- trajectory preview prediction ---
 {
-  check('physics version is 0.14.0', VERSION === '0.14.0');
+  check('physics version is 0.15.0', VERSION === '0.15.0');
   const lvl = LEVELS[0];
   const hit = previewShot(lvl, 0, 0.55);
   check('preview of the level 1 line predicts a target hit',
@@ -476,6 +477,19 @@ check('level not complete with targets left',
     parseSave('{"endlessBest":250}').endlessBest === 99);
   check('save drops a non-integer endless best',
     parseSave('{"endlessBest":"many"}').endlessBest === 0);
+  // Zen best (Block 15, #21): stars collected in one sandbox session,
+  // round-trips and validates like the other bests; old saves default
+  // to 0 and an out-of-range value clamps to 999.
+  const withZen = defaultSave();
+  withZen.zenBest = 7;
+  check('save round-trips the zen best',
+    parseSave(serializeSave(withZen)).zenBest === 7);
+  check('save defaults zen best to 0 for old saves',
+    parseSave('{"stars":{},"unlocked":1}').zenBest === 0);
+  check('save clamps an out-of-range zen best',
+    parseSave('{"zenBest":5000}').zenBest === 999);
+  check('save drops a non-integer zen best',
+    parseSave('{"zenBest":"many"}').zenBest === 0);
   check('save drops a daily best with a bad date',
     parseSave('{"daily":{"date":"yesterday","stars":3}}').daily === null);
   check('save drops a daily best with out-of-range stars',
@@ -855,6 +869,54 @@ check('level not complete with targets left',
   g3.update(0);
   check('perf guard accepts a 0ms frame without stepping',
     g3.level === 0 && Number.isFinite(g3.emaMs));
+}
+
+// --- Block 15: Zen Sandbox (#21) + near-miss slow-mo (#31) ---
+{
+  const zen = zenLevel();
+  check('zen level has challenge id 903 and is flagged zen',
+    zen.id === 903 && zen.id === ZEN_ID && zen.zen === true);
+  check('zen level has 3 targets, 2 planets (one moving) and a black hole',
+    zen.targets.length === 3 && zen.planets.length === 2 && levelHasMovingPlanets(zen)
+    && levelBlackHoles(zen).length === 1);
+  check('zen level sits inside the playfield',
+    zen.pad.x * zen.pad.x + zen.pad.y * zen.pad.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS
+    && zen.planets.every((p) => p.x * p.x + p.y * p.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS)
+    && zen.targets.every((t) => t.x * t.x + t.y * t.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS)
+    && zen.blackHoles.every((b) => b.x * b.x + b.y * b.y < PLAYFIELD_RADIUS * PLAYFIELD_RADIUS));
+  check('zen targets clear every planet and the black hole',
+    zen.targets.every((t) => zen.planets.every((p) => Math.hypot(t.x - p.x, t.y - p.y) > p.r + t.r + 0.5)
+      && zen.blackHoles.every((b) => Math.hypot(t.x - b.x, t.y - b.y) > b.r + t.r + 1)));
+  check('zen moving planet never sweeps over a target, the pad or the black hole',
+    zen.planets.every((p) => {
+      if (!p.orbit) return true;
+      const clear = (x, y, extra) => {
+        const d = Math.hypot(x - p.orbit.cx, y - p.orbit.cy);
+        return Math.abs(d - p.orbit.radius) > p.r + extra + 0.5;
+      };
+      return zen.targets.every((t) => clear(t.x, t.y, t.r))
+        && clear(zen.pad.x, zen.pad.y, 1.5)
+        && zen.blackHoles.every((b) => clear(b.x, b.y, b.r));
+    }));
+  check('zen shot budget is infinite', shotBudget(zen) === Infinity);
+  check('zen level is solvable within 6 shots',
+    (() => { const plan = solveLevel(zen, 6, { coarse: true }); return !!plan && plan.shots <= 6; })());
+  registerGeneratedLevel(zenLevel());
+  check('zen level registers under its id',
+    levelById(ZEN_ID) !== null && levelById(ZEN_ID).zen === true);
+
+  // Near-miss slow-mo: the time scale dips to 0.35 for 450ms of real
+  // time after a slingshot, stays 1 outside the window and under reduce
+  // motion, and a corrupted clock can never freeze the game slow.
+  check('slow-mo scale is 0.35 inside the window',
+    slowMoScale(1000, 1450, false) === SLOW_MO_SCALE && SLOW_MO_SCALE === 0.35);
+  check('slow-mo scale is 1 once the window ends',
+    slowMoScale(1450, 1450, false) === 1 && slowMoScale(2000, 1450, false) === 1);
+  check('slow-mo is disabled under reduce motion', slowMoScale(1000, 1450, true) === 1);
+  check('slow-mo ignores a corrupted clock',
+    slowMoScale(NaN, 1450, false) === 1 && slowMoScale(1000, NaN, false) === 1
+    && slowMoScale(1000, Infinity, false) === 1);
+  check('slow-mo window is 450ms', SLOW_MO_MS === 450);
 }
 
 console.log(`\nsmoke: ${passed} passed, ${failed} failed`);
